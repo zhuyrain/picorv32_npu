@@ -38,3 +38,6 @@
 iVerdi/verdiLog/*
 iVerdi/vcd2fsdbLog/*
 novas.*
+*.fsdb
+*.vcd
+*.vvp
