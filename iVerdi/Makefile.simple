@@ -1,0 +1,46 @@
+# ==========================================
+# PicoRV32 SoC 极简编译与仿真脚本
+# ==========================================
+
+# 定义工具链
+SRC_ROOT = ../
+SIM_TOOL  = iverilog
+SIM_RUN   = vvp
+WAVE_TOOL = verdi
+
+# 定义源文件路径 (假设都在 RISCV 目录下)
+SRC_FILES = $(SRC_ROOT)/picorv32.v \
+            $(SRC_ROOT)/axi_sram.v \
+            $(SRC_ROOT)/tb_picorv32.v
+
+# 定义生成的可执行文件和波形文件名称
+TARGET    = sim.vvp
+WAVE_FILE = picorv32_soc.vcd
+WAVE_FILE_FSDB = picorv32_soc.fsdb
+
+# 默认目标：编译 -> 运行 -> 看波形
+all: compile run conv
+
+# 1. 编译 Verilog 代码
+compile:
+	@echo "--- [1/4] Compiling Verilog Sources ---"
+	$(SIM_TOOL) -o $(TARGET) $(SRC_FILES)
+
+# 2. 运行仿真生成波形
+run:
+	@echo "--- [2/4] Running Simulation ---"
+	$(SIM_RUN) $(TARGET)
+
+# 3. 转换vcd为fsdb
+conv:
+	@echo "--- [3/4] Converting VCD to FSDB ---"
+	vcd2fsdb $(WAVE_FILE) -o $(WAVE_FILE_FSDB)
+
+# 4. 呼出 Verdi 查看波形 (后台运行，不阻塞终端)
+wave:
+	@echo "--- [4/4] Opening Waveform in Verdi ---"
+	$(WAVE_TOOL) -ssf $(WAVE_FILE_FSDB) &
+# 清理编译垃圾
+clean:
+	@echo "--- Cleaning Workspace ---"
+	rm -f $(TARGET) $(WAVE_FILE) $(WAVE_FILE_FSDB)
