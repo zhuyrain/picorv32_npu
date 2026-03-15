@@ -25,7 +25,7 @@ module tb_picorv32;
         $display("--- [SoC Boot Sequence Initiated] ---");
 
         // 超时看门狗，防止死循环
-        #5000000;
+        #500000000;
         $display("--- [Simulation Timeout!] ---");
         $finish;
     end
@@ -89,6 +89,29 @@ module tb_picorv32;
         .pcpi_wait      (1'b0),
         .pcpi_ready     (1'b0)
     );
+
+    // ==========================================
+    // 虚拟 UART 嗅探器 (Virtual UART Snooper)
+    // ==========================================
+    reg [31:0] snoop_awaddr;
+
+    always @(posedge clk) begin
+        // 步骤 1：捕获并锁存 AXI 写地址
+        if (axi_awvalid && axi_awready) begin
+            snoop_awaddr <= axi_awaddr;
+        end
+        
+        // 步骤 2：当写数据有效且完成握手时，拦截打印
+        if (axi_wvalid && axi_wready) begin
+            // 检查当前锁存的地址，或者如果是同一周期发生握手的情况
+            if (snoop_awaddr == 32'h000E0000 || (axi_awvalid && axi_awaddr == 32'h000E0000)) begin
+                // 使用 $write 打印 ASCII 字符，不自动换行
+                $write("%c", axi_wdata[7:0]);
+                // 强制立刻输出到终端，防止仿真器缓存吞字
+                $fflush(); 
+            end
+        end
+    end
 
     // 7. 例化 SRAM 内存 (Slave)
     axi_sram #(
