@@ -15,8 +15,8 @@ module tb_picorv32;
 
     // 3. 仿真控制与波形导出
     initial begin
-        $dumpfile("picorv32_soc.vcd");
-        $dumpvars(0, tb_picorv32); // 抓取所有层级的信号
+        // $dumpfile("picorv32_soc.vcd");
+        // $dumpvars(0, tb_picorv32); // 抓取所有层级的信号
 
         // 复位序列
         resetn = 0;
@@ -90,25 +90,39 @@ module tb_picorv32;
         .pcpi_ready     (1'b0)
     );
 
-    // ==========================================
-    // 虚拟 UART 嗅探器 (Virtual UART Snooper)
+// ==========================================
+    // 精确的 UART 嗅探器 (Airtight UART Snooper)
     // ==========================================
     reg [31:0] snoop_awaddr;
+    reg        snoop_awvalid_pending;
 
     always @(posedge clk) begin
-        // 步骤 1：捕获并锁存 AXI 写地址
-        if (axi_awvalid && axi_awready) begin
-            snoop_awaddr <= axi_awaddr;
+        if (!resetn) begin
+            snoop_awvalid_pending <= 0;
+            snoop_awaddr <= 0;
+        end else begin
+            // 捕获并锁存地址
+            if (axi_awvalid && axi_awready) begin
+                snoop_awaddr <= axi_awaddr;
+                snoop_awvalid_pending <= 1;
+            end
+            // 写入完成，清空 pending 状态
+            if (axi_wvalid && axi_wready) begin
+                snoop_awvalid_pending <= 0;
+            end
         end
-        
-        // 步骤 2：当写数据有效且完成握手时，拦截打印
+    end
+
+    // 独立检测数据通道握手并打印
+    always @(posedge clk) begin
         if (axi_wvalid && axi_wready) begin
-            // 检查当前锁存的地址，或者如果是同一周期发生握手的情况
-            if (snoop_awaddr == 32'h000E0000 || (axi_awvalid && axi_awaddr == 32'h000E0000)) begin
-                // 使用 $write 打印 ASCII 字符，不自动换行
+            // 严谨判断：
+            // 1. 如果 AW 和 W 同周期握手，直接看当前的 axi_awaddr
+            // 2. 如果 AW 先握手，看存下来的 snoop_awaddr
+            if ((axi_awvalid && axi_awready && axi_awaddr == 32'h000E0000) ||
+                (!axi_awvalid && snoop_awvalid_pending && snoop_awaddr == 32'h000E0000)) begin
                 $write("%c", axi_wdata[7:0]);
-                // 强制立刻输出到终端，防止仿真器缓存吞字
-                $fflush(); 
+                $fflush();
             end
         end
     end
