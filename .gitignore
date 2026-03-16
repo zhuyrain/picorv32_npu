@@ -35,3 +35,9 @@
 /synth.log
 /synth.v
 .*.swp
+iVerdi/verdiLog/*
+iVerdi/vcd2fsdbLog/*
+novas.*
+*.fsdb
+*.vcd
+*.vvp
