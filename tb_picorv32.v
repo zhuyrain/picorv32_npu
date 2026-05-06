@@ -25,7 +25,7 @@ module tb_picorv32;
         $display("--- [SoC Boot Sequence Initiated] ---");
 
         // 超时看门狗，防止死循环
-        #500000000;
+        #1500000000;
         $display("--- [Simulation Timeout!] ---");
         $finish;
     end

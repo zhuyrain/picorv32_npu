@@ -3,7 +3,7 @@
 # ==========================================
 
 # 定义工具链
-SRC_ROOT = ../
+SRC_ROOT = ..
 SIM_TOOL  = iverilog
 SIM_RUN   = vvp
 WAVE_TOOL = verdi
