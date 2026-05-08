@@ -4,14 +4,15 @@
 
 # 定义工具链
 SRC_ROOT = ..
+SRC_ROOT_NPU = $(SRC_ROOT)/npu_rtl
 SIM_TOOL  = iverilog
 SIM_RUN   = vvp
 WAVE_TOOL = verdi
 
 # 定义源文件路径 (假设都在 RISCV 目录下)
 SRC_FILES = $(SRC_ROOT)/picorv32.v \
-            $(SRC_ROOT)/axi_sram.v \
-            $(SRC_ROOT)/tb_picorv32.v
+            $(SRC_ROOT_NPU)/axi_sram.v \
+            $(SRC_ROOT_NPU)/tb_picorv32.v
 
 # 定义生成的可执行文件和波形文件名称
 TARGET    = sim.vvp

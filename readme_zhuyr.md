@@ -1,5 +1,8 @@
-## 新增内容结构
-
+# 新增内容结构
+## iVerdi文件夹
+仿真脚本
+## npu_rtl文件夹
+源代码
 ### tb_picorv32.v - 不可综合
 
 1. tb_picorv32.v是主要仿真顶层，主要例化了真实的picorv32核以及带有axi接口的1MB的sram
