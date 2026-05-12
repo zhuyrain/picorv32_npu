@@ -8,31 +8,33 @@ module axi_sram #(
 
     // AXI4-Lite 写地址通道
     input  wire        axi_awvalid,
-    output reg         axi_awready,
+    output wire        axi_awready,
     input  wire [31:0] axi_awaddr,
 
     // AXI4-Lite 写数据通道
     input  wire        axi_wvalid,
-    output reg         axi_wready,
+    output wire        axi_wready,
     input  wire [31:0] axi_wdata,
     input  wire [ 3:0] axi_wstrb,
 
     // AXI4-Lite 写响应通道
     output reg         axi_bvalid,
     input  wire        axi_bready,
+    output wire [ 1:0] axi_bresp,  // 新增：AXI标准要求的响应信号
 
     // AXI4-Lite 读地址通道
     input  wire        axi_arvalid,
-    output reg         axi_arready,
+    output wire        axi_arready,
     input  wire [31:0] axi_araddr,
 
     // AXI4-Lite 读数据通道
     output reg         axi_rvalid,
     input  wire        axi_rready,
-    output reg  [31:0] axi_rdata
+    output wire [31:0] axi_rdata,
+    output wire [ 1:0] axi_rresp   // 新增：AXI标准要求的响应信号
 );
 
-    // 物理内存数组 (以 32-bit Word 为单位)
+    // 物理内存数组 (以 32-bit Word 为单位，支持字节写使能的双端口 RAM 推断)
     localparam WORD_DEPTH = MEM_SIZE / 4;
     reg [31:0] ram [0:WORD_DEPTH-1];
 
@@ -41,50 +43,101 @@ module axi_sram #(
         $readmemh("firmware.hex", ram);
     end
 
-    // ---------------------------------------------------------
-    // AXI4-Lite 写事务状态机 (极简 0-wait-state 设计)
-    // ---------------------------------------------------------
-    wire write_en = axi_awvalid && axi_wvalid; // 当地址和数据都准备好时
+    // 恒定响应：OKAY (2'b00) 表示执行操作的状态 OKEY EXOKAY SLVERR DECERR 
+    assign axi_bresp = 2'b00;
+    assign axi_rresp = 2'b00;
+
+    // ==========================================================
+    // 写通道逻辑 (Write Channel Logic)
+    // ==========================================================
+    reg aw_ready_reg, w_ready_reg, b_valid_reg;
+    reg[31:0] aw_addr_reg;
+    reg [31:0] w_data_reg;
+    reg[ 3:0] w_strb_reg;
+
+    assign axi_awready = aw_ready_reg;
+    assign axi_wready  = w_ready_reg;
+    assign axi_bvalid  = b_valid_reg;
+
+    // 写事务完成标志：地址和数据都被锁存
+    wire write_ready = (aw_ready_reg && axi_awvalid) || (aw_addr_reg != 32'hFFFF_FFFF);
+    wire data_ready  = (w_ready_reg  && axi_wvalid)  || (w_data_reg  != 32'hFFFF_FFFF);
+    wire do_write    = write_ready && data_ready && !b_valid_reg;
 
     always @(posedge clk) begin
         if (!resetn) begin
-            axi_awready <= 0;
-            axi_wready  <= 0;
-            axi_bvalid  <= 0;
+            aw_ready_reg <= 1'b1;
+            w_ready_reg  <= 1'b1;
+            b_valid_reg  <= 1'b0;
+            aw_addr_reg  <= 32'hFFFF_FFFF; // 使用非法地址作为无效标志
+            w_data_reg   <= 32'hFFFF_FFFF;
         end else begin
-            // 握手准备好
-            axi_awready <= 1;
-            axi_wready  <= 1;
+            // 1. 握手 AW 通道：锁存地址
+            if (axi_awvalid && aw_ready_reg) begin
+                aw_addr_reg  <= axi_awaddr;
+                aw_ready_reg <= 1'b0; // 锁存后拉低 ready，阻止新请求
+            end
 
-            if (write_en && axi_awready && axi_wready) begin
-                // 字节选通写入逻辑 (与之前 EZ_TB 一脉相承)
-                if (axi_wstrb[0]) ram[axi_awaddr >> 2][ 7: 0] <= axi_wdata[ 7: 0];
-                if (axi_wstrb[1]) ram[axi_awaddr >> 2][15: 8] <= axi_wdata[15: 8];
-                if (axi_wstrb[2]) ram[axi_awaddr >> 2][23:16] <= axi_wdata[23:16];
-                if (axi_wstrb[3]) ram[axi_awaddr >> 2][31:24] <= axi_wdata[31:24];
+            // 2. 握手 W 通道：锁存数据和选通
+            if (axi_wvalid && w_ready_reg) begin
+                w_data_reg  <= axi_wdata;
+                w_strb_reg  <= axi_wstrb;
+                w_ready_reg <= 1'b0; // 锁存后拉低 ready
+            end
+
+            // 3. 执行写入并发出 B 响应
+            if (aw_addr_reg != 32'hFFFF_FFFF && w_data_reg != 32'hFFFF_FFFF && !b_valid_reg) begin
+                // BRAM Port A: 执行写操作
+                if (w_strb_reg[0]) ram[aw_addr_reg >> 2][ 7: 0] <= w_data_reg[ 7: 0];
+                if (w_strb_reg[1]) ram[aw_addr_reg >> 2][15: 8] <= w_data_reg[15: 8];
+                if (w_strb_reg[2]) ram[aw_addr_reg >> 2][23:16] <= w_data_reg[23:16];
+                if (w_strb_reg[3]) ram[aw_addr_reg >> 2][31:24] <= w_data_reg[31:24];
+
+                b_valid_reg <= 1'b1; // 发送 OK 响应
                 
-                axi_bvalid <= 1; // 发送写完成响应
-            end else if (axi_bvalid && axi_bready) begin
-                axi_bvalid <= 0; // 响应被主设备接收，清零
+                // 清理锁存状态，准备下一次
+                aw_addr_reg <= 32'hFFFF_FFFF;
+                w_data_reg  <= 32'hFFFF_FFFF;
+            end
+
+            // 4. 握手 B 通道：Master 取走响应
+            if (b_valid_reg && axi_bready) begin
+                b_valid_reg  <= 1'b0;
+                // 恢复 Ready，允许新的写事务
+                aw_ready_reg <= 1'b1;
+                w_ready_reg  <= 1'b1;
             end
         end
     end
 
-    // ---------------------------------------------------------
-    // AXI4-Lite 读事务状态机
-    // ---------------------------------------------------------
+    // ==========================================================
+    // 读通道逻辑 (Read Channel Logic)
+    // ==========================================================
+    reg ar_ready_reg, r_valid_reg;
+    reg [31:0] r_data_reg;
+
+    assign axi_arready = ar_ready_reg;
+    assign axi_rvalid  = r_valid_reg;
+    assign axi_rdata   = r_data_reg;
+
     always @(posedge clk) begin
         if (!resetn) begin
-            axi_arready <= 0;
-            axi_rvalid  <= 0;
+            ar_ready_reg <= 1'b1;
+            r_valid_reg  <= 1'b0;
+            r_data_reg   <= 32'b0;
         end else begin
-            axi_arready <= 1;
+            // 1. 握手 AR 通道：接收读地址并读取内存
+            if (axi_arvalid && ar_ready_reg) begin
+                // BRAM Port B: 执行读操作
+                r_data_reg   <= ram[axi_araddr >> 2];
+                r_valid_reg  <= 1'b1; // 数据即将有效
+                ar_ready_reg <= 1'b0; // 拉低 ready，阻止新的 AR 直到当前数据被取走
+            end
 
-            if (axi_arvalid && axi_arready) begin
-                axi_rdata  <= ram[axi_araddr >> 2]; // 读出数据
-                axi_rvalid <= 1;                    // 数据有效
-            end else if (axi_rvalid && axi_rready) begin
-                axi_rvalid <= 0;                    // 数据被取走，清零
+            // 2. 握手 R 通道：Master 取走数据
+            if (r_valid_reg && axi_rready) begin
+                r_valid_reg  <= 1'b0;
+                ar_ready_reg <= 1'b1; // 数据被取走，重新允许接收读地址
             end
         end
     end
