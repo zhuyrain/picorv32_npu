@@ -18,7 +18,7 @@ module axi_sram #(
     input  wire [ 3:0] axi_wstrb,
 
     // AXI4-Lite 写响应通道
-    output reg         axi_bvalid,
+    output wire         axi_bvalid,
     input  wire        axi_bready,
     output wire [ 1:0] axi_bresp,  // 新增：AXI标准要求的响应信号
 
@@ -28,7 +28,7 @@ module axi_sram #(
     input  wire [31:0] axi_araddr,
 
     // AXI4-Lite 读数据通道
-    output reg         axi_rvalid,
+    output wire         axi_rvalid,
     input  wire        axi_rready,
     output wire [31:0] axi_rdata,
     output wire [ 1:0] axi_rresp   // 新增：AXI标准要求的响应信号
@@ -48,45 +48,47 @@ module axi_sram #(
     assign axi_rresp = 2'b00;
 
     // ==========================================================
-    // 写通道逻辑 (Write Channel Logic)
+    // 写通道逻辑 (Write Channel Logic) - 完美重构版
     // ==========================================================
     reg aw_ready_reg, w_ready_reg, b_valid_reg;
-    reg[31:0] aw_addr_reg;
+    reg [31:0] aw_addr_reg;
     reg [31:0] w_data_reg;
-    reg[ 3:0] w_strb_reg;
+    reg [ 3:0] w_strb_reg;
+    
+    // 引入独立的状态标志位 (彻底解决 0xFFFF_FFFF 的 Bug)
+    reg aw_latched; 
+    reg w_latched;
 
     assign axi_awready = aw_ready_reg;
     assign axi_wready  = w_ready_reg;
     assign axi_bvalid  = b_valid_reg;
-
-    // 写事务完成标志：地址和数据都被锁存
-    wire write_ready = (aw_ready_reg && axi_awvalid) || (aw_addr_reg != 32'hFFFF_FFFF);
-    wire data_ready  = (w_ready_reg  && axi_wvalid)  || (w_data_reg  != 32'hFFFF_FFFF);
-    wire do_write    = write_ready && data_ready && !b_valid_reg;
 
     always @(posedge clk) begin
         if (!resetn) begin
             aw_ready_reg <= 1'b1;
             w_ready_reg  <= 1'b1;
             b_valid_reg  <= 1'b0;
-            aw_addr_reg  <= 32'hFFFF_FFFF; // 使用非法地址作为无效标志
-            w_data_reg   <= 32'hFFFF_FFFF;
+            aw_latched   <= 1'b0; // 初始状态：地址未锁存
+            w_latched    <= 1'b0; // 初始状态：数据未锁存
         end else begin
-            // 1. 握手 AW 通道：锁存地址
+            // 1. 握手 AW 通道：锁存地址并做标记
             if (axi_awvalid && aw_ready_reg) begin
                 aw_addr_reg  <= axi_awaddr;
+                aw_latched   <= 1'b1; // 标记地址已拿到
                 aw_ready_reg <= 1'b0; // 锁存后拉低 ready，阻止新请求
             end
 
-            // 2. 握手 W 通道：锁存数据和选通
+            // 2. 握手 W 通道：锁存数据并做标记
             if (axi_wvalid && w_ready_reg) begin
                 w_data_reg  <= axi_wdata;
                 w_strb_reg  <= axi_wstrb;
-                w_ready_reg <= 1'b0; // 锁存后拉低 ready
+                w_latched   <= 1'b1; // 标记数据已拿到
+                w_ready_reg <= 1'b0; // 锁存后拉低 ready，阻止新请求
             end
 
             // 3. 执行写入并发出 B 响应
-            if (aw_addr_reg != 32'hFFFF_FFFF && w_data_reg != 32'hFFFF_FFFF && !b_valid_reg) begin
+            // 依赖独立的 latched 标志，不再依赖具体的地址或数据值！
+            if (aw_latched && w_latched && !b_valid_reg) begin
                 // BRAM Port A: 执行写操作
                 if (w_strb_reg[0]) ram[aw_addr_reg >> 2][ 7: 0] <= w_data_reg[ 7: 0];
                 if (w_strb_reg[1]) ram[aw_addr_reg >> 2][15: 8] <= w_data_reg[15: 8];
@@ -95,9 +97,9 @@ module axi_sram #(
 
                 b_valid_reg <= 1'b1; // 发送 OK 响应
                 
-                // 清理锁存状态，准备下一次
-                aw_addr_reg <= 32'hFFFF_FFFF;
-                w_data_reg  <= 32'hFFFF_FFFF;
+                // 消耗掉当前标志，准备迎接下一次传输
+                aw_latched <= 1'b0;
+                w_latched  <= 1'b0;
             end
 
             // 4. 握手 B 通道：Master 取走响应

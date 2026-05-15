@@ -1,55 +1,59 @@
 module pe (
-    input  wire               clk,
-    input  wire               rst_n,
+    input  wire        clk,
+    input  wire        rst_n,
     
-    // --- 控制信号 (垂直流动：上进下出) ---
-    input  wire               weight_en_in,
-    output reg                weight_en_out,
+    // --- 控制信号 ---
+    input  wire        weight_en_in,
+    output reg         weight_en_out,
     
-    // --- 水平数据流 (Activation: 左进右出) ---
-    input  wire signed [7:0]  act_in,
-    output reg  signed [7:0]  act_out,
+    // --- 接口层：绝对纯净的无符号二进制流 ---
+    input  wire [7:0]  act_in,
+    output reg  [7:0]  act_out,
     
-    // --- 垂直数据流 (Partial Sum / Weight Load: 上进下出) ---
-    input  wire signed [31:0] psum_in,
-    output reg  signed [31:0] psum_out
+    input  wire [31:0] psum_in,
+    output reg  [31:0] psum_out
 );
 
-    // 内部权重寄存器
-    reg signed [7:0] weight;
+    // ==========================================
+    // 内部计算域 (Compute Domain)
+    // ==========================================
+    
+    // 1. 显式类型转换：将无符号输入接入内部的有符号 Wire
+    // 使用 $signed() 是为了让 Lint 工具彻底闭嘴，明确告知综合器这是有意为之
+    wire signed [7:0]  act_in_s  = $signed(act_in);
+    wire signed [31:0] psum_in_s = $signed(psum_in);
 
-    // 纯组合逻辑：乘法与加法 (1-stage MAC)
+    // 2. 内部有符号寄存器
+    reg signed [7:0] weight_s;
+
+    // 3. 纯组合逻辑运算 (安全的有符号运算)
     wire signed [15:0] mult_res;
     wire signed [31:0] add_res;
 
-    // 乘法：8-bit * 8-bit = 16-bit
-    assign mult_res = act_in * weight;
-    
-    // 加法：16-bit 符号扩展后与 psum_in 相加
-    assign add_res  = psum_in + mult_res;
+    assign mult_res = act_in_s * weight_s;
+    assign add_res  = psum_in_s + mult_res;
 
-    // 时序逻辑：状态更新与数据流动
+    // ==========================================
+    // 时序与状态更新逻辑
+    // ==========================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            act_out       <= 8'sd0;
-            psum_out      <= 32'sd0;
+            act_out       <= 8'd0;   // 恢复为无符号常数
+            psum_out      <= 32'd0;
             weight_en_out <= 1'b0;
-            weight        <= 8'sd0;
+            weight_s      <= 8'sd0;  // 内部寄存器保留有符号
         end else begin
-            // 1. 控制信号打拍垂直传递
             weight_en_out <= weight_en_in;
+            act_out       <= act_in; // 直接传递纯比特流，不经过符号转换逻辑
             
-            // 2. 特征图数据打拍水平传递
-            act_out       <= act_in;
-            
-            // 3. 权重加载与部分和传递逻辑 (核心复用逻辑)
             if (weight_en_in) begin
-                weight   <= psum_in[7:0]; 
-                // 核心修正：将高 24 位移到低位，高 8 位补零或符号扩展
-                psum_out <= {8'sd0, psum_in[31:8]}; 
+                // 截取低 8 位存入权重
+                weight_s <= $signed(psum_in[7:0]); 
+                // 数据移位传递，高位补零，保持纯粹的位操作
+                psum_out <= {8'd0, psum_in[31:8]}; 
             end else begin
-                // 正常计算模式：输出累加结果
-                psum_out <= add_res;
+                // 4. 计算结果剥离符号，交还给接口层
+                psum_out <= $unsigned(add_res); 
             end
         end
     end

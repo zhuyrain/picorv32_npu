@@ -35,7 +35,7 @@ module sa_4_4 (
     generate
         for (i = 0; i < 4; i = i + 1) begin : BNDRY_MUX
             // 左侧 MUX: 根据 pad_en 决定是填 0 还是吃真实数据 (从 32-bit 中切出对应的 8-bit)
-            assign muxed_left_act[i] = pad_en ? 8'sd0 : left_act_in[(i*8)+7 : i*8];
+            assign muxed_left_act[i] = pad_en ? 8'd0 : left_act_in[(i*8)+7 : i*8];
             
             // 上方 MUX: 根据 weight_en 决定是吃 32-bit 权重 还是 32-bit 偏置
             assign muxed_top_psum[i] = weight_en ? top_weight_in[(i*32)+31 : i*32] : top_bias_in[(i*32)+31 : i*32];
