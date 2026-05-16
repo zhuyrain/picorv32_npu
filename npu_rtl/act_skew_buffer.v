@@ -1,71 +1,71 @@
 `timescale 1ns / 1ps
 
 module act_skew_buffer #(
-    parameter ROWS       = 4,  // ÕóÁĞµÄĞĞÊı
-    parameter DATA_WIDTH = 8   // Ã¿¸öÌØÕ÷Í¼Êı¾İµÄÎ»¿í
+    parameter ROWS       = 4,  // é˜µåˆ—çš„è¡Œæ•°
+    parameter DATA_WIDTH = 8   // æ¯ä¸ªç‰¹å¾å›¾æ•°æ®çš„ä½å®½
 )(
     input  wire                               clk,
     input  wire                               rst_n,
     
-    // --- ¿ØÖÆĞÅºÅ ---
-    input  wire                               pad_en,      // 1: ±ß½ç²¹Áã(Padding)Ä£Ê½; 0: Õı³£¶ÁÈ¡Ä£Ê½
+    // --- æ§åˆ¶ä¿¡å· ---
+    input  wire                               pad_en,      // 1: è¾¹ç•Œè¡¥é›¶(Padding)æ¨¡å¼; 0: æ­£å¸¸è¯»å–æ¨¡å¼
     
-    // --- Êı¾İÊäÈë ---
-    // ´Ó SRAM ËÍÀ´µÄÆ½ÆëÊı¾İ (Flat Data)
-    // T=0: [A3, A2, A1, A0] -> ¶ÔÓ¦¸ßÎ»µ½µÍÎ»
+    // --- æ•°æ®è¾“å…¥ ---
+    // ä» SRAM é€æ¥çš„å¹³é½æ•°æ® (Flat Data)
+    // T=0: [A3, A2, A1, A0] -> å¯¹åº”é«˜ä½åˆ°ä½ä½
     input  wire [(ROWS * DATA_WIDTH) - 1 : 0] act_in_flat,
     
-    // --- Êı¾İÊä³ö ---
-    // Êä³ö¸øÂö¶¯ÕóÁĞ×ó²à½Ó¿ÚµÄ½×Ìİ×´Êı¾İ (Skewed Data)
+    // --- æ•°æ®è¾“å‡º ---
+    // è¾“å‡ºç»™è„‰åŠ¨é˜µåˆ—å·¦ä¾§æ¥å£çš„é˜¶æ¢¯çŠ¶æ•°æ® (Skewed Data)
     output wire [(ROWS * DATA_WIDTH) - 1 : 0] act_out_skewed
 );
 
     // ==========================================
-    // 1. Ç°ÖÃ Padding Âß¼­ (´¦ÀíÆ½ÆëÊı¾İ)
-    // ºËĞÄ¾«Ëè£ºÔÚÊı¾İ½øÈë´òÅÄ¼Ä´æÆ÷Ö®Ç°£¬ÏÈÍ³Ò»½øĞĞ MUX Ñ¡Ôñ¡£
+    // 1. å‰ç½® Padding é€»è¾‘ (å¤„ç†å¹³é½æ•°æ®)
+    // æ ¸å¿ƒç²¾é«“ï¼šåœ¨æ•°æ®è¿›å…¥æ‰“æ‹å¯„å­˜å™¨ä¹‹å‰ï¼Œå…ˆç»Ÿä¸€è¿›è¡Œ MUX é€‰æ‹©ã€‚
     // ==========================================
     wire [(ROWS * DATA_WIDTH) - 1 : 0] padded_flat_in;
     
-    // µ± pad_en Îª 1 Ê±£¬Éú³ÉÈ« 0 ×ÜÏß£»·ñÔò·ÅĞĞÕæÊµÊı¾İ
+    // å½“ pad_en ä¸º 1 æ—¶ï¼Œç”Ÿæˆå…¨ 0 æ€»çº¿ï¼›å¦åˆ™æ”¾è¡ŒçœŸå®æ•°æ®
     assign padded_flat_in = pad_en ? {(ROWS * DATA_WIDTH){1'b0}} : act_in_flat;
 
 
     // ==========================================
-    // 2. Skewing ÑÓ³ÙÖØÅÅÂß¼­
+    // 2. Skewing å»¶è¿Ÿé‡æ’é€»è¾‘
     // ==========================================
     genvar r;
     generate
         for (r = 0; r < ROWS; r = r + 1) begin : ROW_SKEW
             
-            // ×¢Òâ£ºÕâÀïÇĞ·ÖµÄÊÇÒÑ¾­¾­¹ı Padding ¹ıÂËµÄ padded_flat_in£¬¶ø²»ÊÇÔ­Ê¼ÊäÈë
+            // æ³¨æ„ï¼šè¿™é‡Œåˆ‡åˆ†çš„æ˜¯å·²ç»ç»è¿‡ Padding è¿‡æ»¤çš„ padded_flat_inï¼Œè€Œä¸æ˜¯åŸå§‹è¾“å…¥
             wire [DATA_WIDTH-1:0] row_in = padded_flat_in[(r * DATA_WIDTH) +: DATA_WIDTH];
             
             if (r == 0) begin : DELAY_0
-                // µÚ 0 ĞĞ£ºÖ±½ÓÍ¸´«£¬ÎŞÑÓ³Ù (0 ÅÄ)
+                // ç¬¬ 0 è¡Œï¼šç›´æ¥é€ä¼ ï¼Œæ— å»¶è¿Ÿ (0 æ‹)
                 assign act_out_skewed[(r * DATA_WIDTH) +: DATA_WIDTH] = row_in;
                 
             end else begin : DELAY_N
-                // µÚ 1~N ĞĞ£ºÉú³ÉÉî¶ÈÎª r µÄÒÆÎ»¼Ä´æÆ÷Á´ (Shift Register Pipeline)
+                // ç¬¬ 1~N è¡Œï¼šç”Ÿæˆæ·±åº¦ä¸º r çš„ç§»ä½å¯„å­˜å™¨é“¾ (Shift Register Pipeline)
                 reg [DATA_WIDTH-1:0] delay_pipe [0 : r-1];
                 integer i;
                 
                 always @(posedge clk or negedge rst_n) begin
                     if (!rst_n) begin
-                        // ¸´Î»Ê±Çå¿ÕÒÆÎ»¼Ä´æÆ÷£¬·ÀÖ¹·ÂÕæ³õÆÚÊä³ö X Ì¬
+                        // å¤ä½æ—¶æ¸…ç©ºç§»ä½å¯„å­˜å™¨ï¼Œé˜²æ­¢ä»¿çœŸåˆæœŸè¾“å‡º X æ€
                         for (i = 0; i < r; i = i + 1) begin
                             delay_pipe[i] <= {DATA_WIDTH{1'b0}};
                         end
                     end else begin
-                        // ¼Ä´æÆ÷Á´³ÔÈë¹ıÂËºóµÄĞÂÊı¾İ
+                        // å¯„å­˜å™¨é“¾åƒå…¥è¿‡æ»¤åçš„æ–°æ•°æ®
                         delay_pipe[0] <= row_in;
-                        // ºóĞø¼¶½øĞĞÒÆÎ»´«µİ
+                        // åç»­çº§è¿›è¡Œç§»ä½ä¼ é€’
                         for (i = 1; i < r; i = i + 1) begin
                             delay_pipe[i] <= delay_pipe[i-1];
                         end
                     end
                 end
                 
-                // ½«ÒÆÎ»¼Ä´æÆ÷µÄ×îºóÒ»¼¶Êä³öÆ´½Óµ½Êä³ö×ÜÏßÉÏ
+                // å°†ç§»ä½å¯„å­˜å™¨çš„æœ€åä¸€çº§è¾“å‡ºæ‹¼æ¥åˆ°è¾“å‡ºæ€»çº¿ä¸Š
                 assign act_out_skewed[(r * DATA_WIDTH) +: DATA_WIDTH] = delay_pipe[r-1];
             end
             

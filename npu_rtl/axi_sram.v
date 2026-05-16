@@ -1,61 +1,61 @@
 `timescale 1ns / 1ps
 
 module axi_sram #(
-    parameter MEM_SIZE = 1048576 // Ä¬ÈÏ 1MB
+    parameter MEM_SIZE = 1048576 // é»˜è®¤ 1MB
 )(
     input  wire        clk,
     input  wire        resetn,
 
-    // AXI4-Lite Ğ´µØÖ·Í¨µÀ
+    // AXI4-Lite å†™åœ°å€é€šé“
     input  wire        axi_awvalid,
     output wire        axi_awready,
     input  wire [31:0] axi_awaddr,
 
-    // AXI4-Lite Ğ´Êı¾İÍ¨µÀ
+    // AXI4-Lite å†™æ•°æ®é€šé“
     input  wire        axi_wvalid,
     output wire        axi_wready,
     input  wire [31:0] axi_wdata,
     input  wire [ 3:0] axi_wstrb,
 
-    // AXI4-Lite Ğ´ÏìÓ¦Í¨µÀ
+    // AXI4-Lite å†™å“åº”é€šé“
     output wire         axi_bvalid,
     input  wire        axi_bready,
-    output wire [ 1:0] axi_bresp,  // ĞÂÔö£ºAXI±ê×¼ÒªÇóµÄÏìÓ¦ĞÅºÅ
+    output wire [ 1:0] axi_bresp,  // æ–°å¢ï¼šAXIæ ‡å‡†è¦æ±‚çš„å“åº”ä¿¡å·
 
-    // AXI4-Lite ¶ÁµØÖ·Í¨µÀ
+    // AXI4-Lite è¯»åœ°å€é€šé“
     input  wire        axi_arvalid,
     output wire        axi_arready,
     input  wire [31:0] axi_araddr,
 
-    // AXI4-Lite ¶ÁÊı¾İÍ¨µÀ
+    // AXI4-Lite è¯»æ•°æ®é€šé“
     output wire         axi_rvalid,
     input  wire        axi_rready,
     output wire [31:0] axi_rdata,
-    output wire [ 1:0] axi_rresp   // ĞÂÔö£ºAXI±ê×¼ÒªÇóµÄÏìÓ¦ĞÅºÅ
+    output wire [ 1:0] axi_rresp   // æ–°å¢ï¼šAXIæ ‡å‡†è¦æ±‚çš„å“åº”ä¿¡å·
 );
 
-    // ÎïÀíÄÚ´æÊı×é (ÒÔ 32-bit Word Îªµ¥Î»£¬Ö§³Ö×Ö½ÚĞ´Ê¹ÄÜµÄË«¶Ë¿Ú RAM ÍÆ¶Ï)
+    // ç‰©ç†å†…å­˜æ•°ç»„ (ä»¥ 32-bit Word ä¸ºå•ä½ï¼Œæ”¯æŒå­—èŠ‚å†™ä½¿èƒ½çš„åŒç«¯å£ RAM æ¨æ–­)
     localparam WORD_DEPTH = MEM_SIZE / 4;
     reg [31:0] ram [0:WORD_DEPTH-1];
 
-    // FPGA Ä§·¨£ºÔÚ×ÛºÏ/·ÂÕæÊ±½« hex ÎÄ¼şÀÓÓ¡½ø BRAM
+    // FPGA é­”æ³•ï¼šåœ¨ç»¼åˆ/ä»¿çœŸæ—¶å°† hex æ–‡ä»¶çƒ™å°è¿› BRAM
     initial begin
         $readmemh("firmware.hex", ram);
     end
 
-    // ºã¶¨ÏìÓ¦£ºOKAY (2'b00) ±íÊ¾Ö´ĞĞ²Ù×÷µÄ×´Ì¬ OKEY EXOKAY SLVERR DECERR 
+    // æ’å®šå“åº”ï¼šOKAY (2'b00) è¡¨ç¤ºæ‰§è¡Œæ“ä½œçš„çŠ¶æ€ OKEY EXOKAY SLVERR DECERR 
     assign axi_bresp = 2'b00;
     assign axi_rresp = 2'b00;
 
     // ==========================================================
-    // Ğ´Í¨µÀÂß¼­ (Write Channel Logic) - ÍêÃÀÖØ¹¹°æ
+    // å†™é€šé“é€»è¾‘ (Write Channel Logic) - å®Œç¾é‡æ„ç‰ˆ
     // ==========================================================
     reg aw_ready_reg, w_ready_reg, b_valid_reg;
     reg [31:0] aw_addr_reg;
     reg [31:0] w_data_reg;
     reg [ 3:0] w_strb_reg;
     
-    // ÒıÈë¶ÀÁ¢µÄ×´Ì¬±êÖ¾Î» (³¹µ×½â¾ö 0xFFFF_FFFF µÄ Bug)
+    // å¼•å…¥ç‹¬ç«‹çš„çŠ¶æ€æ ‡å¿—ä½ (å½»åº•è§£å†³ 0xFFFF_FFFF çš„ Bug)
     reg aw_latched; 
     reg w_latched;
 
@@ -68,44 +68,44 @@ module axi_sram #(
             aw_ready_reg <= 1'b1;
             w_ready_reg  <= 1'b1;
             b_valid_reg  <= 1'b0;
-            aw_latched   <= 1'b0; // ³õÊ¼×´Ì¬£ºµØÖ·Î´Ëø´æ
-            w_latched    <= 1'b0; // ³õÊ¼×´Ì¬£ºÊı¾İÎ´Ëø´æ
+            aw_latched   <= 1'b0; // åˆå§‹çŠ¶æ€ï¼šåœ°å€æœªé”å­˜
+            w_latched    <= 1'b0; // åˆå§‹çŠ¶æ€ï¼šæ•°æ®æœªé”å­˜
         end else begin
-            // 1. ÎÕÊÖ AW Í¨µÀ£ºËø´æµØÖ·²¢×ö±ê¼Ç
+            // 1. æ¡æ‰‹ AW é€šé“ï¼šé”å­˜åœ°å€å¹¶åšæ ‡è®°
             if (axi_awvalid && aw_ready_reg) begin
                 aw_addr_reg  <= axi_awaddr;
-                aw_latched   <= 1'b1; // ±ê¼ÇµØÖ·ÒÑÄÃµ½
-                aw_ready_reg <= 1'b0; // Ëø´æºóÀ­µÍ ready£¬×èÖ¹ĞÂÇëÇó
+                aw_latched   <= 1'b1; // æ ‡è®°åœ°å€å·²æ‹¿åˆ°
+                aw_ready_reg <= 1'b0; // é”å­˜åæ‹‰ä½ readyï¼Œé˜»æ­¢æ–°è¯·æ±‚
             end
 
-            // 2. ÎÕÊÖ W Í¨µÀ£ºËø´æÊı¾İ²¢×ö±ê¼Ç
+            // 2. æ¡æ‰‹ W é€šé“ï¼šé”å­˜æ•°æ®å¹¶åšæ ‡è®°
             if (axi_wvalid && w_ready_reg) begin
                 w_data_reg  <= axi_wdata;
                 w_strb_reg  <= axi_wstrb;
-                w_latched   <= 1'b1; // ±ê¼ÇÊı¾İÒÑÄÃµ½
-                w_ready_reg <= 1'b0; // Ëø´æºóÀ­µÍ ready£¬×èÖ¹ĞÂÇëÇó
+                w_latched   <= 1'b1; // æ ‡è®°æ•°æ®å·²æ‹¿åˆ°
+                w_ready_reg <= 1'b0; // é”å­˜åæ‹‰ä½ readyï¼Œé˜»æ­¢æ–°è¯·æ±‚
             end
 
-            // 3. Ö´ĞĞĞ´Èë²¢·¢³ö B ÏìÓ¦
-            // ÒÀÀµ¶ÀÁ¢µÄ latched ±êÖ¾£¬²»ÔÙÒÀÀµ¾ßÌåµÄµØÖ·»òÊı¾İÖµ£¡
+            // 3. æ‰§è¡Œå†™å…¥å¹¶å‘å‡º B å“åº”
+            // ä¾èµ–ç‹¬ç«‹çš„ latched æ ‡å¿—ï¼Œä¸å†ä¾èµ–å…·ä½“çš„åœ°å€æˆ–æ•°æ®å€¼ï¼
             if (aw_latched && w_latched && !b_valid_reg) begin
-                // BRAM Port A: Ö´ĞĞĞ´²Ù×÷
+                // BRAM Port A: æ‰§è¡Œå†™æ“ä½œ
                 if (w_strb_reg[0]) ram[aw_addr_reg >> 2][ 7: 0] <= w_data_reg[ 7: 0];
                 if (w_strb_reg[1]) ram[aw_addr_reg >> 2][15: 8] <= w_data_reg[15: 8];
                 if (w_strb_reg[2]) ram[aw_addr_reg >> 2][23:16] <= w_data_reg[23:16];
                 if (w_strb_reg[3]) ram[aw_addr_reg >> 2][31:24] <= w_data_reg[31:24];
 
-                b_valid_reg <= 1'b1; // ·¢ËÍ OK ÏìÓ¦
+                b_valid_reg <= 1'b1; // å‘é€ OK å“åº”
                 
-                // ÏûºÄµôµ±Ç°±êÖ¾£¬×¼±¸Ó­½ÓÏÂÒ»´Î´«Êä
+                // æ¶ˆè€—æ‰å½“å‰æ ‡å¿—ï¼Œå‡†å¤‡è¿æ¥ä¸‹ä¸€æ¬¡ä¼ è¾“
                 aw_latched <= 1'b0;
                 w_latched  <= 1'b0;
             end
 
-            // 4. ÎÕÊÖ B Í¨µÀ£ºMaster È¡×ßÏìÓ¦
+            // 4. æ¡æ‰‹ B é€šé“ï¼šMaster å–èµ°å“åº”
             if (b_valid_reg && axi_bready) begin
                 b_valid_reg  <= 1'b0;
-                // »Ö¸´ Ready£¬ÔÊĞíĞÂµÄĞ´ÊÂÎñ
+                // æ¢å¤ Readyï¼Œå…è®¸æ–°çš„å†™äº‹åŠ¡
                 aw_ready_reg <= 1'b1;
                 w_ready_reg  <= 1'b1;
             end
@@ -113,7 +113,7 @@ module axi_sram #(
     end
 
     // ==========================================================
-    // ¶ÁÍ¨µÀÂß¼­ (Read Channel Logic)
+    // è¯»é€šé“é€»è¾‘ (Read Channel Logic)
     // ==========================================================
     reg ar_ready_reg, r_valid_reg;
     reg [31:0] r_data_reg;
@@ -128,18 +128,18 @@ module axi_sram #(
             r_valid_reg  <= 1'b0;
             r_data_reg   <= 32'b0;
         end else begin
-            // 1. ÎÕÊÖ AR Í¨µÀ£º½ÓÊÕ¶ÁµØÖ·²¢¶ÁÈ¡ÄÚ´æ
+            // 1. æ¡æ‰‹ AR é€šé“ï¼šæ¥æ”¶è¯»åœ°å€å¹¶è¯»å–å†…å­˜
             if (axi_arvalid && ar_ready_reg) begin
-                // BRAM Port B: Ö´ĞĞ¶Á²Ù×÷
+                // BRAM Port B: æ‰§è¡Œè¯»æ“ä½œ
                 r_data_reg   <= ram[axi_araddr >> 2];
-                r_valid_reg  <= 1'b1; // Êı¾İ¼´½«ÓĞĞ§
-                ar_ready_reg <= 1'b0; // À­µÍ ready£¬×èÖ¹ĞÂµÄ AR Ö±µ½µ±Ç°Êı¾İ±»È¡×ß
+                r_valid_reg  <= 1'b1; // æ•°æ®å³å°†æœ‰æ•ˆ
+                ar_ready_reg <= 1'b0; // æ‹‰ä½ readyï¼Œé˜»æ­¢æ–°çš„ AR ç›´åˆ°å½“å‰æ•°æ®è¢«å–èµ°
             end
 
-            // 2. ÎÕÊÖ R Í¨µÀ£ºMaster È¡×ßÊı¾İ
+            // 2. æ¡æ‰‹ R é€šé“ï¼šMaster å–èµ°æ•°æ®
             if (r_valid_reg && axi_rready) begin
                 r_valid_reg  <= 1'b0;
-                ar_ready_reg <= 1'b1; // Êı¾İ±»È¡×ß£¬ÖØĞÂÔÊĞí½ÓÊÕ¶ÁµØÖ·
+                ar_ready_reg <= 1'b1; // æ•°æ®è¢«å–èµ°ï¼Œé‡æ–°å…è®¸æ¥æ”¶è¯»åœ°å€
             end
         end
     end
