@@ -328,7 +328,7 @@ module tb_npu_core;
                                              $signed(captured_psum[(col*32)+31 -: 32]));
                                     err_cnt = err_cnt + 1;
                                 end else begin
-                                    $display("[%0t] [Monitor] Col %0d (Vec %0d) PASS.", $time, col, actual_vec);
+                                    $display("[%0t] [Monitor] Col %0d (Vec %0d) PASS: Exp & Got=%0d", $time, col, actual_vec, $signed(expected_val));
                                 end
                             end
                         end
@@ -386,37 +386,48 @@ module tb_npu_core;
         log_msg("Second weight load complete.");
 
         // -------------------------------------------------------
-        // Phase 9: 简单计算验证 (新权重 x 全1激活)
+        // Phase 9: 简单计算验证 (新权重 x 全1激活) - 完美修复版
         // -------------------------------------------------------
         log_msg("=== Phase 9: Quick Compute Verification ===");
 
-        // 清零偏置
+        // 1. 清零偏置
         sa_top_bias_in = 128'd0;
 
-        // pad 清零激活流水线
+        // 2. 清理缓冲并输入单组有效数据
         pad_en = 1'b1;
         wait_cycles(4);
         pad_en = 1'b0;
 
         // 送入一组简单激活: 全部为 1
         act_in_flat = pack4x8(8'd1, 8'd1, 8'd1, 8'd1);
-        wait_cycles(1);
-        act_in_flat = 32'd0;
-        wait_cycles(12);
+        @(posedge clk); // 喂入 1 拍有效数据
+        
+        act_in_flat = 32'd0; // 恢复全 0 冲刷
 
-        $display("Final output: col0=%0d, col1=%0d, col2=%0d, col3=%0d",
-                 $signed(sa_bottom_psum_out[31:0]),
-                 $signed(sa_bottom_psum_out[63:32]),
-                 $signed(sa_bottom_psum_out[95:64]),
-                 $signed(sa_bottom_psum_out[127:96]));
+        // 3. 结果捕获 (核心修复：阶梯式精准捕获)
+        // 解释：有效数据进入后，经过 PIPELINE_DELAY(4拍) 后，Col 0 首当其冲流出结果
+        wait_cycles(3); // 已经过了一个 posedge clk，再等 3 拍，刚好是 T+4 拍的前夕
+        
+        // 预定义预期结果
+        $display("[%0t] Expected: col0=10, col1=20, col2=30, col3=40", $time);
 
-        // 预期: Col c = sum( (r+1)*(c+1) for r=0..3 ) = (c+1) * (1+2+3+4) = (c+1)*10
-        //   col0=10, col1=20, col2=30, col3=40
-        $display("Expected: col0=10, col1=20, col2=30, col3=40");
+        // 依次、逐拍、斜向捕获结果
+        @(negedge clk);
+        $display("[%0t] Final Col 0 = %0d", $time, $signed(sa_bottom_psum_out[31:0]));
+
+        @(negedge clk);
+        $display("[%0t] Final Col 1 = %0d", $time, $signed(sa_bottom_psum_out[63:32]));
+
+        @(negedge clk);
+        $display("[%0t] Final Col 2 = %0d", $time, $signed(sa_bottom_psum_out[95:64]));
+
+        @(negedge clk);
+        $display("[%0t] Final Col 3 = %0d", $time, $signed(sa_bottom_psum_out[127:96]));
 
         // -------------------------------------------------------
         // 仿真结束
         // -------------------------------------------------------
+        wait_cycles(5); // 稍微缓冲一下波形，让肉眼在 Verdi 里看波形更舒服
         log_msg("=== Simulation Complete ===");
         #50;
         $finish;
