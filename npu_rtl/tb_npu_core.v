@@ -305,13 +305,17 @@ module tb_npu_core;
                     
                     // 定义一个局部标志，记录当前周期有没有报错
                     begin
-                        reg [31:0] err_cnt = 0;
+                        // 正确写法（每次进入外层循环都强制清零）：
+                        reg [31:0] err_cnt;
+                        err_cnt = 0;
                         
                         // 独立检查每一列
                         for (col = 0; col < 4; col = col + 1) begin
                             // 核心奥义：计算当前列对应的实际向量索引 (空间倾斜逆推)
                             // Col 0 对应 m_cyc; Col 1 对应 m_cyc-1; Col 2 对应 m_cyc-2...
-                            int actual_vec = m_cyc - col; 
+                            // 正确写法（每次进入内层 for 循环都重新计算）：
+                            int actual_vec;
+                            actual_vec = m_cyc - col;
                             
                             // 只有当 actual_vec 在 0~9 的合法范围内时，这列的数据才是我们需要验证的
                             if (actual_vec >= 0 && actual_vec < 10) begin
