@@ -4,7 +4,7 @@ module sa_4_4 (
 
     // --- 全局控制 ---
     input  wire        weight_en, // 1: 配置权重模式; 0: 计算模式
-    input  wire        pad_en,    // 1: 左侧输入补零(Padding); 0: 正常输入
+    // 【删除】pad_en 被移除了！纯粹吃数据
 
     // --- 边界数据输入 ---
     // 为了防止接口太长，通常将一维数组打平拼接在一起
@@ -25,7 +25,6 @@ module sa_4_4 (
     wire        weight_en_wire [0:3][0:3];
 
     // 边界 MUX 后的输出暂存
-    wire [7:0]  muxed_left_act [0:3];
     wire [31:0] muxed_top_psum [0:3];
 
     // ==========================================
@@ -33,10 +32,7 @@ module sa_4_4 (
     // ==========================================
     genvar i;
     generate
-        for (i = 0; i < 4; i = i + 1) begin : BNDRY_MUX
-            // 左侧 MUX: 根据 pad_en 决定是填 0 还是吃真实数据 (从 32-bit 中切出对应的 8-bit)
-            assign muxed_left_act[i] = pad_en ? 8'd0 : left_act_in[(i*8)+7 : i*8];
-            
+        for (i = 0; i < 4; i = i + 1) begin : TOP_MUX
             // 上方 MUX: 根据 weight_en 决定是吃 32-bit 权重 还是 32-bit 偏置
             assign muxed_top_psum[i] = weight_en ? top_weight_in[(i*32)+31 : i*32] : top_bias_in[(i*32)+31 : i*32];
         end
@@ -50,9 +46,8 @@ module sa_4_4 (
         for (r = 0; r < 4; r = r + 1) begin : ROW
             for (c = 0; c < 4; c = c + 1) begin : COL
                 
-                // 巧妙处理每个 PE 的输入连线
-                // 第一列(c==0)接左侧 MUX 输出，其余接左边相邻 PE 的输出
-                wire [7:0]  pe_act_in  = (c == 0) ? muxed_left_act[r] : act_wire[r][c-1];
+                // 【核心修改】：直接从 left_act_in 切片获取输入，不再经过 pad MUX
+                wire [7:0]  pe_act_in  = (c == 0) ? left_act_in[(r*8)+7 : r*8] : act_wire[r][c-1];
                 
                 // 第一行(r==0)接上方 MUX 输出，其余接上方相邻 PE 的输出
                 wire [31:0] pe_psum_in = (r == 0) ? muxed_top_psum[c] : psum_wire[r-1][c];
