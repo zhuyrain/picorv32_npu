@@ -38,7 +38,7 @@ module sa_4_4 (
         end
     endgenerate
 
-    // ==========================================
+// ==========================================
     // 3. 核心 4x4 脉动阵列例化与缝合
     // ==========================================
     genvar r, c;
@@ -47,12 +47,32 @@ module sa_4_4 (
             for (c = 0; c < 4; c = c + 1) begin : COL
                 
                 // 【核心修改】：直接从 left_act_in 切片获取输入，不再经过 pad MUX
-                wire [7:0]  pe_act_in  = (c == 0) ? left_act_in[(r*8)+7 : r*8] : act_wire[r][c-1];
-                
-                // 第一行(r==0)接上方 MUX 输出，其余接上方相邻 PE 的输出
-                wire [31:0] pe_psum_in = (r == 0) ? muxed_top_psum[c] : psum_wire[r-1][c];
-                wire        pe_wen_in  = (r == 0) ? weight_en         : weight_en_wire[r-1][c];
+                // 1. 先声明当前 PE 的输入连线
+                wire [7:0]  pe_act_in;
+                wire [31:0] pe_psum_in;
+                wire        pe_wen_in;
 
+                // 2. 结构级判定：处理水平激活数据流 (act_in)
+                if (c == 0) begin : ACT_EDGE
+                    // 最左侧列：吃外部边界输入
+                    assign pe_act_in = left_act_in[(r*8)+7 : r*8];
+                end else begin : ACT_INNER
+                    // 内部列：吃左侧相邻 PE 的输出
+                    assign pe_act_in = act_wire[r][c-1];
+                end
+
+                // 3. 结构级判定：处理垂直部分和流 (psum_in) 与 权重控制流 (weight_en)
+                if (r == 0) begin : PSUM_EDGE
+                    // 最顶层行：吃上方 MUX 的输入
+                    assign pe_psum_in = muxed_top_psum[c];
+                    assign pe_wen_in  = weight_en;
+                end else begin : PSUM_INNER
+                    // 内部行：吃上方相邻 PE 的输出
+                    assign pe_psum_in = psum_wire[r-1][c];
+                    assign pe_wen_in  = weight_en_wire[r-1][c];
+                end
+
+                // 4. 完美例化 PE
                 pe u_pe (
                     .clk            (clk),
                     .rst_n          (rst_n),

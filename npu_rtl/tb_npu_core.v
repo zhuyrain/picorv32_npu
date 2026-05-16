@@ -21,13 +21,15 @@
 `timescale 1ns / 1ps
 
 module tb_npu_core;
-
+    // 定义常量：从馈送输入到输出结果的流水线延迟周期数
+    // 假设 PE 内部 MAC 为 1 拍延迟，4行阵列 = 4 拍延迟
+    localparam PIPELINE_DELAY = 4; 
     // =========================================================================
     // 1. 全局时钟与复位
     // =========================================================================
     reg        clk;
     reg        rst_n;
-
+    
     // 100MHz 时钟 (周期 10ns)
     initial begin
         clk = 1'b0;
@@ -110,7 +112,7 @@ module tb_npu_core;
 
     // ---- 辅助任务: 打印带时间戳消息 ----
     task log_msg;
-        input [256*8-1:0] msg;
+        input string msg;  // 👈 就改这一个词！
         begin
             $display("[%0t] %s", $time, msg);
         end
@@ -263,76 +265,67 @@ module tb_npu_core;
         log_msg("Bias initialization complete.");
 
         // -------------------------------------------------------
-        // Phase 5: 计算阶段 (weight_en = 0, pad_en = 0)
-        //
-        // 逐周期馈送激活向量
-        //
-        // 时序说明:
-        //   - 激活通过 act_skew_buffer 产生对角偏斜:
-        //     Row0: act[0] @ T+0, act[1] @ T+1, act[2] @ T+2, ...
-        //     Row1: act[0] @ T+1, act[1] @ T+2, act[2] @ T+3, ...
-        //     Row2: act[0] @ T+2, act[1] @ T+3, act[2] @ T+4, ...
-        //     Row3: act[0] @ T+3, act[1] @ T+4, act[2] @ T+5, ...
-        //   - 脉动阵列延迟: 4 行 = 4 个周期
-        //   - 首个有效输出: ~7 个周期后
+        // Phase 5 & 6: 计算阶段与并发结果验证
         // -------------------------------------------------------
-        log_msg("=== Phase 5: Compute Phase ===");
+        log_msg("=== Phase 5 & Phase 6: Compute & Concurrent Verification ===");
 
         pad_en = 1'b0;
 
-        // 馈送 10 组激活向量
-        for (cyc = 0; cyc < 10; cyc = cyc + 1) begin
-            act_in_flat = pack4x8(A[3][cyc], A[2][cyc], A[1][cyc], A[0][cyc]);
 
-            $display("[%0t] Feeding activation vector %0d: act_in_flat = 0x%h",
-                     $time, cyc, act_in_flat);
-
-            @(posedge clk);
-        end
-
-        // 清空流水线 (flush pipeline)
-        act_in_flat = 32'd0;
-        wait_cycles(12);
-
-        log_msg("Compute phase complete. Pipeline flushed.");
-
-        // -------------------------------------------------------
-        // Phase 6: 结果捕获与验证
-        // -------------------------------------------------------
-        log_msg("=== Phase 6: Result Verification ===");
-
-        captured_psum = sa_bottom_psum_out;
-        $display("  Captured bottom_psum_out = 0x%h", captured_psum);
-        $display("  col0=%0d, col1=%0d, col2=%0d, col3=%0d",
-                 $signed(captured_psum[31:0]),
-                 $signed(captured_psum[63:32]),
-                 $signed(captured_psum[95:64]),
-                 $signed(captured_psum[127:96]));
-
-        // 逐列验证 (使用 cycle 0 激活作为参考)
-        begin
-            reg [31:0] mismatch_cnt;
-            mismatch_cnt = 0;
-
-            for (col = 0; col < 4; col = col + 1) begin
-                expected_val = expected_psum(col, 0);
-                $display("  Col[%0d]: Expected=%0d (0x%h), Got=%0d (0x%h)",
-                         col,
-                         $signed(expected_val), expected_val,
-                         $signed(captured_psum[(col*32)+31 -: 32]),
-                         captured_psum[(col*32)+31 -: 32]);
-
-                if ($signed(captured_psum[(col*32)+31 -: 32]) !== $signed(expected_val)) begin
-                    $display("    *** MISMATCH ***");
-                    mismatch_cnt = mismatch_cnt + 1;
+        fork
+            // 线程 1：负责连续馈送激活数据和冲刷阵列
+            begin
+                for (cyc = 0; cyc < 10; cyc = cyc + 1) begin
+                    act_in_flat = {
+                        {8{$signed(A[3][cyc])}},
+                        {8{$signed(A[2][cyc])}},
+                        {8{$signed(A[1][cyc])}},
+                        {8{$signed(A[0][cyc])}}
+                    };
+                    $display("[%0t] [Driver] Feeding activation vector %0d", $time, cyc);
+                    @(posedge clk);
                 end
+
+                // 馈送完毕，送零冲刷流水线
+                act_in_flat = 32'd0;
+                wait_cycles(PIPELINE_DELAY + 2); // 等待最后一笔数据流出
             end
 
-            if (mismatch_cnt == 0)
-                $display("  [PASS] All columns match expected values.");
-            else
-                $display("  [FAIL] %0d column(s) mismatch.", mismatch_cnt);
-        end
+            // 线程 2：负责在正确的时序周期抓取并比对结果
+            begin
+                // 延迟等待第一笔有效数据到达底部
+                wait_cycles(PIPELINE_DELAY); 
+
+                for (cyc = 0; cyc < 10; cyc = cyc + 1) begin
+                    // 在时钟下降沿捕获，避免竞争冒险
+                    @(negedge clk); 
+                    
+                    captured_psum = sa_bottom_psum_out;
+                    $display("[%0t] [Monitor] Captured Result for vector %0d: 0x%h", $time, cyc, captured_psum);
+                    
+                    // 循环比对 4 列
+                    begin
+                        reg [31:0] mismatch_cnt;
+                        mismatch_cnt = 0;
+                        for (col = 0; col < 4; col = col + 1) begin
+                            expected_val = expected_psum(col, cyc); // 注意这里传入的周期索引 cyc
+                            
+                            if ($signed(captured_psum[(col*32)+31 -: 32]) !== $signed(expected_val)) begin
+                                $display("  *** MISMATCH at Col %0d ***: Expected=%0d, Got=%0d", 
+                                         col, $signed(expected_val), $signed(captured_psum[(col*32)+31 -: 32]));
+                                mismatch_cnt = mismatch_cnt + 1;
+                            end
+                        end
+                        if (mismatch_cnt == 0)
+                            $display("  [PASS] Vector %0d all columns matched.", cyc);
+                    end
+                    // 对齐到下一个周期
+                    @(posedge clk);
+                end
+            end
+        join
+
+        log_msg("Compute and Verification phase complete.");
 
         // -------------------------------------------------------
         // Phase 7: 连续多拍输出监控
