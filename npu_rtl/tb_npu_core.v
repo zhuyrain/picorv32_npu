@@ -264,7 +264,7 @@ module tb_npu_core;
 
         log_msg("Bias initialization complete.");
 
-        // -------------------------------------------------------
+// -------------------------------------------------------
         // Phase 5 & 6: 计算阶段与并发结果验证
         // -------------------------------------------------------
         log_msg("=== Phase 5 & Phase 6: Compute & Concurrent Verification ===");
@@ -273,54 +273,70 @@ module tb_npu_core;
 
 
         fork
-            // 线程 1：负责连续馈送激活数据和冲刷阵列
+            // ---------------------------------------------------
+            // 线程 1：Driver (负责连续馈送激活数据)
+            // ---------------------------------------------------
             begin
-                for (cyc = 0; cyc < 10; cyc = cyc + 1) begin
-                    act_in_flat = {
-                        {8{$signed(A[3][cyc])}},
-                        {8{$signed(A[2][cyc])}},
-                        {8{$signed(A[1][cyc])}},
-                        {8{$signed(A[0][cyc])}}
-                    };
-                    $display("[%0t] [Driver] Feeding activation vector %0d", $time, cyc);
+                // 注意：使用 int d_cyc 声明局部变量，避免线程冲突！
+                for (int d_cyc = 0; d_cyc < 10; d_cyc = d_cyc + 1) begin
+                    act_in_flat = pack4x8(A[3][d_cyc], A[2][d_cyc], A[1][d_cyc], A[0][d_cyc]);
+                    $display("[%0t] [Driver] Feeding activation vector %0d", $time, d_cyc);
                     @(posedge clk);
                 end
 
-                // 馈送完毕，送零冲刷流水线
+                // 馈送完毕，送零冲刷流水线 (至少需要冲刷 4+3=7 拍才能让最右侧流完)
                 act_in_flat = 32'd0;
-                wait_cycles(PIPELINE_DELAY + 2); // 等待最后一笔数据流出
+                wait_cycles(PIPELINE_DELAY + 5); 
             end
 
-            // 线程 2：负责在正确的时序周期抓取并比对结果
+            // ---------------------------------------------------
+            // 线程 2：Monitor (负责抓取并进行倾斜比对)
+            // ---------------------------------------------------
             begin
-                // 延迟等待第一笔有效数据到达底部
+                // 延迟等待第一笔有效数据 (Col 0 of Vector 0) 到达底部
                 wait_cycles(PIPELINE_DELAY); 
 
-                for (cyc = 0; cyc < 10; cyc = cyc + 1) begin
-                    // 在时钟下降沿捕获，避免竞争冒险
-                    @(negedge clk); 
+                // 循环次数需要增加：因为最右侧的 Col 3 比 Col 0 晚流出 3 个周期
+                // 所以 10 个向量，要等 13 拍才能全部接收完毕
+                for (int m_cyc = 0; m_cyc < 10 + 3; m_cyc = m_cyc + 1) begin
+                    @(negedge clk); // 下降沿抓取，最稳定
                     
                     captured_psum = sa_bottom_psum_out;
-                    $display("[%0t] [Monitor] Captured Result for vector %0d: 0x%h", $time, cyc, captured_psum);
                     
-                    // 循环比对 4 列
+                    // 定义一个局部标志，记录当前周期有没有报错
                     begin
-                        reg [31:0] mismatch_cnt;
-                        mismatch_cnt = 0;
+                        reg [31:0] err_cnt = 0;
+                        
+                        // 独立检查每一列
                         for (col = 0; col < 4; col = col + 1) begin
-                            expected_val = expected_psum(col, cyc); // 注意这里传入的周期索引 cyc
+                            // 核心奥义：计算当前列对应的实际向量索引 (空间倾斜逆推)
+                            // Col 0 对应 m_cyc; Col 1 对应 m_cyc-1; Col 2 对应 m_cyc-2...
+                            int actual_vec = m_cyc - col; 
                             
-                            if ($signed(captured_psum[(col*32)+31 -: 32]) !== $signed(expected_val)) begin
-                                $display("  *** MISMATCH at Col %0d ***: Expected=%0d, Got=%0d", 
-                                         col, $signed(expected_val), $signed(captured_psum[(col*32)+31 -: 32]));
-                                mismatch_cnt = mismatch_cnt + 1;
+                            // 只有当 actual_vec 在 0~9 的合法范围内时，这列的数据才是我们需要验证的
+                            if (actual_vec >= 0 && actual_vec < 10) begin
+                                expected_val = expected_psum(col, actual_vec);
+                                
+                                if ($signed(captured_psum[(col*32)+31 -: 32]) !== $signed(expected_val)) begin
+                                    $display("[%0t] [Monitor] *** MISMATCH at Col %0d (Vec %0d) ***: Exp=%0d, Got=%0d", 
+                                             $time, col, actual_vec, 
+                                             $signed(expected_val), 
+                                             $signed(captured_psum[(col*32)+31 -: 32]));
+                                    err_cnt = err_cnt + 1;
+                                end else begin
+                                    $display("[%0t] [Monitor] Col %0d (Vec %0d) PASS.", $time, col, actual_vec);
+                                end
                             end
                         end
-                        if (mismatch_cnt == 0)
-                            $display("  [PASS] Vector %0d all columns matched.", cyc);
+                        
+                        // 可选：如果某个周期有错误，停止仿真
+                        if (err_cnt > 0) begin
+                            $display("[%0t] Simulation stopped due to mismatches.", $time);
+                            $finish;
+                        end
                     end
-                    // 对齐到下一个周期
-                    @(posedge clk);
+                    
+                    @(posedge clk); // 对齐下一个时钟周期
                 end
             end
         join
