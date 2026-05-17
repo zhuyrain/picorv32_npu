@@ -2,35 +2,35 @@
 
 module tb_picorv32;
 
-    // 1. È«¾ÖĞÅºÅ
+    // 1. å…¨å±€ä¿¡å·
     reg clk;
     reg resetn;
     wire trap;
 
-    // 2. Ê±ÖÓ·¢ÉúÆ÷ (100MHz)
+    // 2. æ—¶é’Ÿå‘ç”Ÿå™¨ (100MHz)
     initial begin
         clk = 0;
         forever #5 clk = ~clk; 
     end
 
-    // 3. ·ÂÕæ¿ØÖÆÓë²¨ĞÎµ¼³ö
+    // 3. ä»¿çœŸæ§åˆ¶ä¸æ³¢å½¢å¯¼å‡º
     initial begin
         // $dumpfile("picorv32_soc.vcd");
-        // $dumpvars(0, tb_picorv32); // ×¥È¡ËùÓĞ²ã¼¶µÄĞÅºÅ
+        // $dumpvars(0, tb_picorv32); // æŠ“å–æ‰€æœ‰å±‚çº§çš„ä¿¡å·
 
-        // ¸´Î»ĞòÁĞ
+        // å¤ä½åºåˆ—
         resetn = 0;
         #100;
         resetn = 1;
         $display("--- [SoC Boot Sequence Initiated] ---");
 
-        // ³¬Ê±¿´ÃÅ¹·£¬·ÀÖ¹ËÀÑ­»·
+        // è¶…æ—¶çœ‹é—¨ç‹—ï¼Œé˜²æ­¢æ­»å¾ªç¯
         #1500000000;
         $display("--- [Simulation Timeout!] ---");
         $finish;
     end
 
-    // 4. Trap ¼à¿ØÆ÷
+    // 4. Trap ç›‘æ§å™¨
     always @(posedge clk) begin
         if (trap) begin
             $display("--- [CPU TRAPPED: Execution Halted] ---");
@@ -38,7 +38,7 @@ module tb_picorv32;
         end
     end
 
-    // 5. AXI4-Lite ×ÜÏßÁ¬Ïß¶¨Òå
+    // 5. AXI4-Lite æ€»çº¿è¿çº¿å®šä¹‰
     wire        axi_awvalid, axi_awready;
     wire [31:0] axi_awaddr;
     wire [ 2:0] axi_awprot;
@@ -52,18 +52,18 @@ module tb_picorv32;
     wire        axi_rvalid,  axi_rready;
     wire [31:0] axi_rdata;
 
-    // 6. Àı»¯ºËĞÄ CPU (Master)
+    // 6. ä¾‹åŒ–æ ¸å¿ƒ CPU (Master)
     picorv32_axi #(
-        .COMPRESSED_ISA(1),    // Ö§³Ö RV32C Ñ¹ËõÖ¸Áî¼¯
-        // .ENABLE_MUL(1),        // ¿ªÆô³Ë³ı·¨Ä£¿é (PCPI)
-        .ENABLE_FAST_MUL(1),   // ¿ªÆôµ¥ÖÜÆÚ¿ìËÙ³Ë·¨Æ÷
-        .ENABLE_DIV(1)         // ¿ªÆô³ı·¨Æ÷
+        .COMPRESSED_ISA(1),    // æ”¯æŒ RV32C å‹ç¼©æŒ‡ä»¤é›†
+        // .ENABLE_MUL(1),        // å¼€å¯ä¹˜é™¤æ³•æ¨¡å— (PCPI)
+        .ENABLE_FAST_MUL(1),   // å¼€å¯å•å‘¨æœŸå¿«é€Ÿä¹˜æ³•å™¨
+        .ENABLE_DIV(1)         // å¼€å¯é™¤æ³•å™¨
     ) cpu_core (
         .clk            (clk),
         .resetn         (resetn),
         .trap           (trap),
 
-        // AXI4-Lite Master ½Ó¿Ú
+        // AXI4-Lite Master æ¥å£
         .mem_axi_awvalid(axi_awvalid),
         .mem_axi_awready(axi_awready),
         .mem_axi_awaddr (axi_awaddr),
@@ -82,7 +82,7 @@ module tb_picorv32;
         .mem_axi_rready (axi_rready),
         .mem_axi_rdata  (axi_rdata),
 
-        // °óËÀÎ´Ê¹ÓÃµÄ½Ó¿Ú (ÖĞ¶ÏºÍĞ­´¦ÀíÆ÷½Ó¿Ú)
+        // ç»‘æ­»æœªä½¿ç”¨çš„æ¥å£ (ä¸­æ–­å’Œåå¤„ç†å™¨æ¥å£)
         .irq            (32'b0),
         .pcpi_wr        (1'b0),
         .pcpi_rd        (32'b0),
@@ -91,7 +91,7 @@ module tb_picorv32;
     );
 
 // ==========================================
-    // ¾«È·µÄ UART ĞáÌ½Æ÷ (Airtight UART Snooper)
+    // ç²¾ç¡®çš„ UART å—…æ¢å™¨ (Airtight UART Snooper)
     // ==========================================
     reg [31:0] snoop_awaddr;
     reg        snoop_awvalid_pending;
@@ -101,24 +101,24 @@ module tb_picorv32;
             snoop_awvalid_pending <= 0;
             snoop_awaddr <= 0;
         end else begin
-            // ²¶»ñ²¢Ëø´æµØÖ·
+            // æ•è·å¹¶é”å­˜åœ°å€
             if (axi_awvalid && axi_awready) begin
                 snoop_awaddr <= axi_awaddr;
                 snoop_awvalid_pending <= 1;
             end
-            // Ğ´ÈëÍê³É£¬Çå¿Õ pending ×´Ì¬
+            // å†™å…¥å®Œæˆï¼Œæ¸…ç©º pending çŠ¶æ€
             if (axi_wvalid && axi_wready) begin
                 snoop_awvalid_pending <= 0;
             end
         end
     end
 
-    // ¶ÀÁ¢¼ì²âÊı¾İÍ¨µÀÎÕÊÖ²¢´òÓ¡
+    // ç‹¬ç«‹æ£€æµ‹æ•°æ®é€šé“æ¡æ‰‹å¹¶æ‰“å°
     always @(posedge clk) begin
         if (axi_wvalid && axi_wready) begin
-            // ÑÏ½÷ÅĞ¶Ï£º
-            // 1. Èç¹û AW ºÍ W Í¬ÖÜÆÚÎÕÊÖ£¬Ö±½Ó¿´µ±Ç°µÄ axi_awaddr
-            // 2. Èç¹û AW ÏÈÎÕÊÖ£¬¿´´æÏÂÀ´µÄ snoop_awaddr
+            // ä¸¥è°¨åˆ¤æ–­ï¼š
+            // 1. å¦‚æœ AW å’Œ W åŒå‘¨æœŸæ¡æ‰‹ï¼Œç›´æ¥çœ‹å½“å‰çš„ axi_awaddr
+            // 2. å¦‚æœ AW å…ˆæ¡æ‰‹ï¼Œçœ‹å­˜ä¸‹æ¥çš„ snoop_awaddr
             if ((axi_awvalid && axi_awready && axi_awaddr == 32'h000E0000) ||
                 (!axi_awvalid && snoop_awvalid_pending && snoop_awaddr == 32'h000E0000)) begin
                 $write("%c", axi_wdata[7:0]);
@@ -127,14 +127,14 @@ module tb_picorv32;
         end
     end
 
-    // 7. Àı»¯ SRAM ÄÚ´æ (Slave)
+    // 7. ä¾‹åŒ– SRAM å†…å­˜ (Slave)
     axi_sram #(
         .MEM_SIZE(1048576) // 1MB SRAM
     ) main_memory (
         .clk        (clk),
         .resetn     (resetn),
 
-        // AXI4-Lite Slave ½Ó¿Ú
+        // AXI4-Lite Slave æ¥å£
         .axi_awvalid(axi_awvalid),
         .axi_awready(axi_awready),
         .axi_awaddr (axi_awaddr),

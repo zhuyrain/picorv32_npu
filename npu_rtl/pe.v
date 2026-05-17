@@ -1,55 +1,59 @@
 module pe (
-    input  wire               clk,
-    input  wire               rst_n,
+    input  wire        clk,
+    input  wire        rst_n,
     
-    // --- ¿ØÖÆĞÅºÅ (´¹Ö±Á÷¶¯£ºÉÏ½øÏÂ³ö) ---
-    input  wire               weight_en_in,
-    output reg                weight_en_out,
+    // --- æ§åˆ¶ä¿¡å· ---
+    input  wire        weight_en_in,
+    output reg         weight_en_out,
     
-    // --- Ë®Æ½Êı¾İÁ÷ (Activation: ×ó½øÓÒ³ö) ---
-    input  wire signed [7:0]  act_in,
-    output reg  signed [7:0]  act_out,
+    // --- æ¥å£å±‚ï¼šç»å¯¹çº¯å‡€çš„æ— ç¬¦å·äºŒè¿›åˆ¶æµ ---
+    input  wire [7:0]  act_in,
+    output reg  [7:0]  act_out,
     
-    // --- ´¹Ö±Êı¾İÁ÷ (Partial Sum / Weight Load: ÉÏ½øÏÂ³ö) ---
-    input  wire signed [31:0] psum_in,
-    output reg  signed [31:0] psum_out
+    input  wire [31:0] psum_in,
+    output reg  [31:0] psum_out
 );
 
-    // ÄÚ²¿È¨ÖØ¼Ä´æÆ÷
-    reg signed [7:0] weight;
+    // ==========================================
+    // å†…éƒ¨è®¡ç®—åŸŸ (Compute Domain)
+    // ==========================================
+    
+    // 1. æ˜¾å¼ç±»å‹è½¬æ¢ï¼šå°†æ— ç¬¦å·è¾“å…¥æ¥å…¥å†…éƒ¨çš„æœ‰ç¬¦å· Wire
+    // ä½¿ç”¨ $signed() æ˜¯ä¸ºäº†è®© Lint å·¥å…·å½»åº•é—­å˜´ï¼Œæ˜ç¡®å‘ŠçŸ¥ç»¼åˆå™¨è¿™æ˜¯æœ‰æ„ä¸ºä¹‹
+    wire signed [7:0]  act_in_s  = $signed(act_in);
+    wire signed [31:0] psum_in_s = $signed(psum_in);
 
-    // ´¿×éºÏÂß¼­£º³Ë·¨Óë¼Ó·¨ (1-stage MAC)
+    // 2. å†…éƒ¨æœ‰ç¬¦å·å¯„å­˜å™¨
+    reg signed [7:0] weight_s;
+
+    // 3. çº¯ç»„åˆé€»è¾‘è¿ç®— (å®‰å…¨çš„æœ‰ç¬¦å·è¿ç®—)
     wire signed [15:0] mult_res;
     wire signed [31:0] add_res;
 
-    // ³Ë·¨£º8-bit * 8-bit = 16-bit
-    assign mult_res = act_in * weight;
-    
-    // ¼Ó·¨£º16-bit ·ûºÅÀ©Õ¹ºóÓë psum_in Ïà¼Ó
-    assign add_res  = psum_in + mult_res;
+    assign mult_res = act_in_s * weight_s;
+    assign add_res  = psum_in_s + mult_res;
 
-    // Ê±ĞòÂß¼­£º×´Ì¬¸üĞÂÓëÊı¾İÁ÷¶¯
+    // ==========================================
+    // æ—¶åºä¸çŠ¶æ€æ›´æ–°é€»è¾‘
+    // ==========================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            act_out       <= 8'sd0;
-            psum_out      <= 32'sd0;
+            act_out       <= 8'd0;   // æ¢å¤ä¸ºæ— ç¬¦å·å¸¸æ•°
+            psum_out      <= 32'd0;
             weight_en_out <= 1'b0;
-            weight        <= 8'sd0;
+            weight_s      <= 8'sd0;  // å†…éƒ¨å¯„å­˜å™¨ä¿ç•™æœ‰ç¬¦å·
         end else begin
-            // 1. ¿ØÖÆĞÅºÅ´òÅÄ´¹Ö±´«µİ
             weight_en_out <= weight_en_in;
+            act_out       <= act_in; // ç›´æ¥ä¼ é€’çº¯æ¯”ç‰¹æµï¼Œä¸ç»è¿‡ç¬¦å·è½¬æ¢é€»è¾‘
             
-            // 2. ÌØÕ÷Í¼Êı¾İ´òÅÄË®Æ½´«µİ
-            act_out       <= act_in;
-            
-            // 3. È¨ÖØ¼ÓÔØÓë²¿·ÖºÍ´«µİÂß¼­ (ºËĞÄ¸´ÓÃÂß¼­)
             if (weight_en_in) begin
-                weight   <= psum_in[7:0]; 
-                // ºËĞÄĞŞÕı£º½«¸ß 24 Î»ÒÆµ½µÍÎ»£¬¸ß 8 Î»²¹Áã»ò·ûºÅÀ©Õ¹
-                psum_out <= {8'sd0, psum_in[31:8]}; 
+                // æˆªå–ä½ 8 ä½å­˜å…¥æƒé‡
+                weight_s <= $signed(psum_in[7:0]); 
+                // æ•°æ®ç§»ä½ä¼ é€’ï¼Œé«˜ä½è¡¥é›¶ï¼Œä¿æŒçº¯ç²¹çš„ä½æ“ä½œ
+                psum_out <= {8'd0, psum_in[31:8]}; 
             end else begin
-                // Õı³£¼ÆËãÄ£Ê½£ºÊä³öÀÛ¼Ó½á¹û
-                psum_out <= add_res;
+                // 4. è®¡ç®—ç»“æœå‰¥ç¦»ç¬¦å·ï¼Œäº¤è¿˜ç»™æ¥å£å±‚
+                psum_out <= $unsigned(add_res); 
             end
         end
     end
