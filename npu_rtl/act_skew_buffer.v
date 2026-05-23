@@ -10,63 +10,71 @@ module act_skew_buffer #(
     // --- 控制信号 ---
     input  wire                               pad_en,      // 1: 边界补零(Padding)模式; 0: 正常读取模式
     
-    // --- 数据输入 ---
-    // 从 SRAM 送来的平齐数据 (Flat Data)
-    // T=0: [A3, A2, A1, A0] -> 对应高位到低位
+    // ====================================================
+    // --- 数据与对应的有效令牌输入 ---
+    // ====================================================
     input  wire [(ROWS * DATA_WIDTH) - 1 : 0] act_in_flat,
+    input  wire                               act_valid_in, // 【新增】外部送入的一根全局有效令牌
     
-    // --- 数据输出 ---
-    // 输出给脉动阵列左侧接口的阶梯状数据 (Skewed Data)
-    output wire [(ROWS * DATA_WIDTH) - 1 : 0] act_out_skewed
+    // ====================================================
+    // --- 数据与对应的有效令牌输出 ---
+    // ====================================================
+    output wire [(ROWS * DATA_WIDTH) - 1 : 0] act_out_skewed,
+    output wire [ROWS - 1 : 0]                act_valid_out_skewed // 【新增】打斜后的 4-bit 令牌
 );
 
     // ==========================================
     // 1. 前置 Padding 逻辑 (处理平齐数据)
-    // 核心精髓：在数据进入打拍寄存器之前，先统一进行 MUX 选择。
     // ==========================================
     wire [(ROWS * DATA_WIDTH) - 1 : 0] padded_flat_in;
     
-    // 当 pad_en 为 1 时，生成全 0 总线；否则放行真实数据
+    // 注意：pad_en 为 1 时，输入全 0，但这【仍然是有效计算】，
+    // 外部的 act_valid_in 依然为 1，所以令牌不需要被 pad_en 屏蔽！
     assign padded_flat_in = pad_en ? {(ROWS * DATA_WIDTH){1'b0}} : act_in_flat;
 
 
     // ==========================================
-    // 2. Skewing 延迟重排逻辑
+    // 2. Skewing 延迟重排逻辑 (数据与令牌同步延迟)
     // ==========================================
     genvar r;
     generate
         for (r = 0; r < ROWS; r = r + 1) begin : ROW_SKEW
             
-            // 注意：这里切分的是已经经过 Padding 过滤的 padded_flat_in，而不是原始输入
             wire [DATA_WIDTH-1:0] row_in = padded_flat_in[(r * DATA_WIDTH) +: DATA_WIDTH];
             
             if (r == 0) begin : DELAY_0
-                // 第 0 行：直接透传，无延迟 (0 拍)
+                // 第 0 行：数据与令牌直接透传，无延迟
                 assign act_out_skewed[(r * DATA_WIDTH) +: DATA_WIDTH] = row_in;
+                assign act_valid_out_skewed[r] = act_valid_in;
                 
             end else begin : DELAY_N
-                // 第 1~N 行：生成深度为 r 的移位寄存器链 (Shift Register Pipeline)
+                // 第 1~N 行：生成深度为 r 的移位寄存器链
                 reg [DATA_WIDTH-1:0] delay_pipe [0 : r-1];
+                reg                  valid_pipe [0 : r-1]; // 【新增】专门给有效令牌建的移位寄存器
                 integer i;
                 
                 always @(posedge clk or negedge rst_n) begin
                     if (!rst_n) begin
-                        // 复位时清空移位寄存器，防止仿真初期输出 X 态
                         for (i = 0; i < r; i = i + 1) begin
                             delay_pipe[i] <= {DATA_WIDTH{1'b0}};
+                            valid_pipe[i] <= 1'b0;         // 【新增】令牌复位
                         end
                     end else begin
-                        // 寄存器链吃入过滤后的新数据
+                        // 第 0 级吃入当前数据和全局令牌
                         delay_pipe[0] <= row_in;
+                        valid_pipe[0] <= act_valid_in;     // 【新增】吃入令牌
+                        
                         // 后续级进行移位传递
                         for (i = 1; i < r; i = i + 1) begin
                             delay_pipe[i] <= delay_pipe[i-1];
+                            valid_pipe[i] <= valid_pipe[i-1]; // 【新增】移位令牌
                         end
                     end
                 end
                 
-                // 将移位寄存器的最后一级输出拼接到输出总线上
+                // 拼接输出
                 assign act_out_skewed[(r * DATA_WIDTH) +: DATA_WIDTH] = delay_pipe[r-1];
+                assign act_valid_out_skewed[r] = valid_pipe[r-1]; // 【新增】输出打斜后的令牌
             end
             
         end
