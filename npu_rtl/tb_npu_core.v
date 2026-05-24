@@ -20,7 +20,6 @@ module tb_npu_core;
     // 2. act_skew_buffer 接口信号
     // =========================================================================
     reg        pad_en;                              // 1: 零填充模式, 0: 正常数据
-    reg        preload_bias;                        // 预加载偏置信号
     reg  [31:0] act_in_flat;                        // 平铺激活输入 (4行 x 8-bit = 32-bit)
     reg        act_valid_in;                        // 【新增】全局有效令牌
     
@@ -28,13 +27,22 @@ module tb_npu_core;
     wire [ 3:0] act_valid_out_skewed;               // 【新增】打斜后的有效令牌
 
     // =========================================================================
-    // 3. sa_4_4 接口信号(后续权重加载信号后可以跟着一个skew buffer，这样可以完全消除权重加载的延迟)
+    // 3. sa_4_4 与 npu_bottom_acc 接口信号(后续权重加载信号后可以跟着一个skew buffer，这样可以完全消除权重加载的延迟)
     // =========================================================================
     reg         sa_weight_en;                       // 1: 权重加载模式, 0: 计算模式
     reg  [127:0] sa_top_weight_in;                  // 上方权重输入 (4列 x 32-bit = 128-bit)
-    reg  [127:0] sa_top_bias_in;                    // 上方偏置输入 (4列 x 32-bit = 128-bit)
+    
+    // 【修改 1】：变量语义搬家。它不再是 sa_top_bias_in，而是直接喂给累加器的 Bias
+    reg  [127:0] acc_bias_in;                    
+    reg          preload_bias; // 【新增】控制累加器预装填 Bias 的信号
+
     wire [127:0] sa_bottom_psum_out;                // 底部部分和输出 (4列 x 32-bit = 128-bit)
-    wire [3:0] sa_bottom_psum_out;                // 底部部分和有效信号输出 (4列 x 1-bit = 4-bit)
+    
+    // 【修改 2】：修复重名冲突
+    wire [3:0] sa_bottom_valid_out;                 // 底部 4 列的有效令牌输出
+
+    // 【新增】：累加器最终算完包含 Bias 的 128-bit 结果
+    wire [127:0] final_acc_out; 
 
     // =========================================================================
     // 4. act_skew_buffer 例化
@@ -53,23 +61,43 @@ module tb_npu_core;
     );
 
     // =========================================================================
-    // 5. sa_4_4 例化 (4x4 脉动阵列)
-    //    - 16 个 PE 以 4x4 网格排列
-    //    - 激活从左向右传播, 部分和从上向下传播
-    //    - weight_en=1: 通过 top_weight_in 加载权重
-    //    - weight_en=0: 通过 top_bias_in 加载偏置并执行 MAC 计算
-    //    - weight_en=1时可以并行进行top_bias_in的输入
+    // 5. sa_4_4 例化 (纯净的 4x4 乘加机器)
     // =========================================================================
     sa_4_4 u_sa_4_4 (
+        .clk              (clk),
+        .rst_n            (rst_n),
+        .weight_en        (sa_weight_en),
+        .left_act_in      (act_out_skewed),           
+        .left_act_valid   (act_valid_out_skewed),     
+        .top_weight_in    (sa_top_weight_in),
+        
+        // 【修改 3】：阵列顶部永远吃 0！贯彻把 Bias 剥离阵列的方针！
+        .top_bias_in      (128'd0), 
+        
+        .bottom_psum_out  (sa_bottom_psum_out),
+        .bottom_valid_out (sa_bottom_valid_out)
+    );
+
+    // =========================================================================
+    // 5.5. npu_bottom_acc 例化 (底部累加器)
+    // =========================================================================
+    npu_bottom_acc #(
+        .COLS       (4),
+        .PSUM_WIDTH (32)
+    ) u_bottom_acc (
         .clk             (clk),
         .rst_n           (rst_n),
-        .weight_en       (sa_weight_en),
-        .left_act_in     (act_out_skewed),           // <-- 来自 act_skew_buffer 的偏斜激活
-        .left_act_valid  (act_valid_out_skewed),     // 【新增】将打斜的令牌喂给阵列
-        .top_weight_in   (sa_top_weight_in),
-        .top_bias_in     (128'b0),
-        .bottom_psum_out (sa_bottom_psum_out),
-        .bottom_valid_out(sa_bottom_valid_out)
+        
+        // 控制信号
+        .preload_bias    (preload_bias),
+        .bottom_valid_in (sa_bottom_valid_out), // 完美吃入倾斜的 Valid 令牌
+        
+        // 数据信号
+        .bias_in         (acc_bias_in),         // Bias 在这里被注入！
+        .bottom_psum_in  (sa_bottom_psum_out),  // 承接阵列算出的裸 Psum
+        
+        // 最终输出
+        .acc_out         (final_acc_out)
     );
 
     // =========================================================================
@@ -116,13 +144,16 @@ module tb_npu_core;
     // 计算软件预期部分和
     function [31:0] expected_psum;
         input integer col;
-        input integer cycle;
+        input integer cyc;
         reg signed [31:0] sum;
+        integer cycle;
         integer r;
         begin
             sum = B[col];
-            for (r = 0; r < 4; r = r + 1) begin
-                sum = sum + $signed(A[r][cycle]) * W[r][col];
+            for ( cycle = 0; cycle < cyc; cycle = cycle + 1) begin
+                for (r = 0; r < 4; r = r + 1) begin
+                    sum = sum + $signed(A[r][cycle]) * W[r][col];
+                end
             end
             expected_psum = sum;
         end
@@ -154,7 +185,7 @@ module tb_npu_core;
         act_valid_in     = 1'b0; // 【新增】初始化时令牌为 0
         sa_weight_en     = 1'b0;
         sa_top_weight_in = 128'd0;
-        sa_top_bias_in   = 128'd0;
+        acc_bias_in      = 128'd0;
 
         // -------------------------------------------------------
         // Phase 1 & 2: 复位与生成测试数据
@@ -222,24 +253,27 @@ module tb_npu_core;
         log_msg("Weight loading complete. Switching to compute mode.");
 
         // -------------------------------------------------------
-        // Phase 4: 偏置初始化 (依赖 act_valid=0 制造气泡)
+        // Phase 4: 偏置预装填
         // -------------------------------------------------------
-        log_msg("=== Phase 4: Bias Initialization ===");
+        log_msg("=== Phase 4: Bias Preload ===");
         pad_en = 1'b1;  
         // 虽然透传了偏置，但是每一列的部分和还是只加了一次偏置
         // 这是因为第一个PE做完运算后就会覆盖原本的偏置透传了
         act_valid_in = 1'b0; // 【关键】：无有效令牌，PE 内 mult_res=0，直接透传偏置
 
         for (col = 0; col < 4; col = col + 1) begin
-            sa_top_bias_in[(col*32) +: 32] = B[col];
+            acc_bias_in[(col*32) +: 32] = B[col];
         end
 
-        $display("  top_bias_in = 0x%h", sa_top_bias_in);
-
+        $display("  acc_bias_in = 0x%h", acc_bias_in);
+        // 发射 1 拍 preload_bias 信号，将 Bias 瞬间砸入底部累加器！
+        preload_bias <= 1'b1;
+        @(posedge clk);
+        preload_bias <= 1'b0;
         // 完全不需要等待偏置透传，偏置只需要在第一行的4个PE中发挥作用就好了
         // 实际验证后：和等待4拍的仿真结果是完全一致的
         wait_cycles(0);
-        log_msg("Bias initialization complete.");
+        log_msg("Bias Preload complete.");
 
         // -------------------------------------------------------
         // Phase 5 & 6: 计算阶段与并发结果验证
@@ -271,9 +305,9 @@ module tb_npu_core;
             // ---------------------------------------------------
             begin
                 wait_cycles(PIPELINE_DELAY); 
-                for (int m_cyc = 0; m_cyc < 10 + 3; m_cyc = m_cyc + 1) begin
+                for (int m_cyc = 0; m_cyc <= 10 + 3; m_cyc = m_cyc + 1) begin
                     @(negedge clk); 
-                    captured_psum = sa_bottom_psum_out;
+                    captured_psum = final_acc_out;
                     
                     // 定义一个局部标志，记录当前周期有没有报错
                     begin
@@ -290,7 +324,7 @@ module tb_npu_core;
                             actual_vec = m_cyc - col;
                             
                             // 只有当 actual_vec 在 0~9 的合法范围内时，这列的数据才是我们需要验证的
-                            if (actual_vec >= 0 && actual_vec < 10) begin
+                            if (actual_vec >= 0 && actual_vec <= 10) begin
                                 expected_val = expected_psum(col, actual_vec);
                                 
                                 if ($signed(captured_psum[(col*32)+31 -: 32]) !== $signed(expected_val)) begin
@@ -325,12 +359,12 @@ module tb_npu_core;
         log_msg("=== Phase 7: Continuous Output Monitoring ===");
         repeat (5) begin
             @(posedge clk);
-            $display("[%0t] bottom_psum_out: col0=%4d, col1=%4d, col2=%4d, col3=%4d",
+            $display("[%0t] final_acc_out: col0=%4d, col1=%4d, col2=%4d, col3=%4d",
                      $time,
-                     $signed(sa_bottom_psum_out[31:0]),
-                     $signed(sa_bottom_psum_out[63:32]),
-                     $signed(sa_bottom_psum_out[95:64]),
-                     $signed(sa_bottom_psum_out[127:96]));
+                     $signed(final_acc_out[31:0]),
+                     $signed(final_acc_out[63:32]),
+                     $signed(final_acc_out[95:64]),
+                     $signed(final_acc_out[127:96]));
         end
 
         // -------------------------------------------------------
@@ -361,14 +395,16 @@ module tb_npu_core;
         log_msg("=== Phase 9: Quick Compute Verification ===");
 
         // 1. 清零偏置
-        sa_top_bias_in = 128'd0;
-
+        acc_bias_in = 128'd0;
+        preload_bias <= 1'b1;
+        @(posedge clk);
+        preload_bias <= 1'b0;
         // 2. 清理缓冲并输入单组有效数据
         pad_en = 1'b1;
         wait_cycles(0);
         pad_en = 1'b0;
 
-        // 喂入 1 拍有效数据
+        // 3. 喂入 1 拍有效数据
         act_in_flat <= pack4x8(8'd1, 8'd1, 8'd1, 8'd1);
         act_valid_in <= 1'b1; // 【新增】
         @(posedge clk); 
@@ -376,13 +412,13 @@ module tb_npu_core;
         act_in_flat <= 32'd0; 
         act_valid_in <= 1'b0; // 【新增】
         
-        wait_cycles(3); 
+        wait_cycles(4); 
         $display("[%0t] Expected: col0=10, col1=20, col2=30, col3=40", $time);
 
-        @(negedge clk); $display("[%0t] Final Col 0 = %0d", $time, $signed(sa_bottom_psum_out[31:0]));
-        @(negedge clk); $display("[%0t] Final Col 1 = %0d", $time, $signed(sa_bottom_psum_out[63:32]));
-        @(negedge clk); $display("[%0t] Final Col 2 = %0d", $time, $signed(sa_bottom_psum_out[95:64]));
-        @(negedge clk); $display("[%0t] Final Col 3 = %0d", $time, $signed(sa_bottom_psum_out[127:96]));
+        @(negedge clk); $display("[%0t] Final Col 0 = %0d", $time, $signed(final_acc_out[31:0]));
+        @(negedge clk); $display("[%0t] Final Col 1 = %0d", $time, $signed(final_acc_out[63:32]));
+        @(negedge clk); $display("[%0t] Final Col 2 = %0d", $time, $signed(final_acc_out[95:64]));
+        @(negedge clk); $display("[%0t] Final Col 3 = %0d", $time, $signed(final_acc_out[127:96]));
 
         // -------------------------------------------------------
         // 仿真结束
