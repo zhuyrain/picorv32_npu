@@ -110,6 +110,7 @@ module sa_4_4 (
         genvar i;
         for (i = 0; i < 4; i = i + 1) begin : OUT_ASSIGN
             // 将最后一排 (r=3) 的 psum_out 拼接成 128-bit 传给外部
+            // 反直觉的地方，最左边的数据被放在了bottom_psum_out的最右边，也就是低位
             assign bottom_psum_out[(i*32)+31 : i*32] = psum_wire[3][i];
             // 引出第 3 行每一个 PE 内部打拍后的 valid 信号！
             // 第 3 列感觉也行？因为PE阵列也有轴对称属性，但是布线延迟可能会大些
