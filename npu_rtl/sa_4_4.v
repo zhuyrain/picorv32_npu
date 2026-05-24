@@ -16,7 +16,8 @@ module sa_4_4 (
     input  wire [127:0] top_bias_in,     // 【独立总线】上方 4 列的偏置/部分和输入 (4 * 32-bit)
     
     // --- 阵列底部计算结果输出 ---
-    output wire [127:0] bottom_psum_out  // 底部 4 列的最终部分和输出 (4 * 32-bit)
+    output wire [127:0] bottom_psum_out,  // 底部 4 列的最终部分和输出 (4 * 32-bit)
+    output wire [  3:0] bottom_valid_out // 【新增】底部 4 列对应的有效令牌
 );
 
     // ==========================================
@@ -110,6 +111,9 @@ module sa_4_4 (
         for (i = 0; i < 4; i = i + 1) begin : OUT_ASSIGN
             // 将最后一排 (r=3) 的 psum_out 拼接成 128-bit 传给外部
             assign bottom_psum_out[(i*32)+31 : i*32] = psum_wire[3][i];
+            // 引出第 3 行每一个 PE 内部打拍后的 valid 信号！
+            // 第 3 列感觉也行？因为PE阵列也有轴对称属性，但是布线延迟可能会大些
+            assign bottom_valid_out[i] = act_valid_wire[3][i]; 
         end
     endgenerate
 

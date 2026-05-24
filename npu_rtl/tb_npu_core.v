@@ -20,6 +20,7 @@ module tb_npu_core;
     // 2. act_skew_buffer 接口信号
     // =========================================================================
     reg        pad_en;                              // 1: 零填充模式, 0: 正常数据
+    reg        preload_bias;                        // 预加载偏置信号
     reg  [31:0] act_in_flat;                        // 平铺激活输入 (4行 x 8-bit = 32-bit)
     reg        act_valid_in;                        // 【新增】全局有效令牌
     
@@ -33,6 +34,7 @@ module tb_npu_core;
     reg  [127:0] sa_top_weight_in;                  // 上方权重输入 (4列 x 32-bit = 128-bit)
     reg  [127:0] sa_top_bias_in;                    // 上方偏置输入 (4列 x 32-bit = 128-bit)
     wire [127:0] sa_bottom_psum_out;                // 底部部分和输出 (4列 x 32-bit = 128-bit)
+    wire [3:0] sa_bottom_psum_out;                // 底部部分和有效信号输出 (4列 x 1-bit = 4-bit)
 
     // =========================================================================
     // 4. act_skew_buffer 例化
@@ -65,8 +67,9 @@ module tb_npu_core;
         .left_act_in     (act_out_skewed),           // <-- 来自 act_skew_buffer 的偏斜激活
         .left_act_valid  (act_valid_out_skewed),     // 【新增】将打斜的令牌喂给阵列
         .top_weight_in   (sa_top_weight_in),
-        .top_bias_in     (sa_top_bias_in),
-        .bottom_psum_out (sa_bottom_psum_out)
+        .top_bias_in     (128'b0),
+        .bottom_psum_out (sa_bottom_psum_out),
+        .bottom_valid_out(sa_bottom_valid_out)
     );
 
     // =========================================================================
