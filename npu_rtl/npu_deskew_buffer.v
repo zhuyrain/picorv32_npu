@@ -31,9 +31,9 @@ module npu_deskew_buffer #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            val0_d1 <= 0; val0_d2 <= 0; val0_d3 <= 0;
-            val1_d1 <= 0; val1_d2 <= 0;
-            val2_d1 <= 0;
+            col0_d1 <= 0; col0_d2 <= 0; col0_d3 <= 0;
+            col1_d1 <= 0; col1_d2 <= 0;
+            col2_d1 <= 0;
         end else begin //由于确定时序+只用了最慢的那个有效信号，故不寄存其余有效信号
             // Col 0 移位链 (进 3 退 0)
             col0_d1 <= ppu_data_in[0+:DATA_WIDTH];   

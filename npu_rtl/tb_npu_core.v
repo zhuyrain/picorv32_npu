@@ -43,7 +43,17 @@ module tb_npu_core;
 
     // 【新增】：累加器最终算完包含 Bias 的 128-bit 结果
     wire [127:0] final_acc_out; 
+    
+    // 累加器acc送给PPU的有效信号
+    wire [3:0] acc_valid_out;
+    
+    // PPU送给deskew buffer的有效信号
+    wire [ 3:0] ppu_valid_out;
+    wire [31:0] ppu_data_out;
 
+    // deskew buffer送给axi总线的信号
+    wire [31:0] deskewed_data_out;
+    wire        deskewed_valid_out;
     // =========================================================================
     // 4. act_skew_buffer 例化
     // =========================================================================
@@ -89,6 +99,7 @@ module tb_npu_core;
         .rst_n           (rst_n),
         
         // 控制信号
+        .cfg_window_size (8'd9),
         .preload_bias    (preload_bias),
         .bottom_valid_in (sa_bottom_valid_out), // 完美吃入倾斜的 Valid 令牌
         
@@ -97,9 +108,61 @@ module tb_npu_core;
         .bottom_psum_in  (sa_bottom_psum_out),  // 承接阵列算出的裸 Psum
         
         // 最终输出
-        .acc_out         (final_acc_out)
+        .acc_out         (final_acc_out),
+        .acc_valid_out   (acc_valid_out)
     );
 
+    // =========================================================================
+    // 5.8. npu_ppu 例化 (后处理量化单元)
+    // =========================================================================
+
+
+    npu_ppu #(
+        .COLS(4)
+    ) u_npu_ppu (
+        .clk            (clk),
+        .rst_n          (rst_n),
+        .cfg_multiplier (32'd104),      // 传入 L1_MULT
+        .cfg_shift      (5'd16),        // 传入 L1_SHIFT
+        .cfg_out_zp     (32'd0),        // Zero Point = 0
+        .cfg_relu_en    (1'b0),         // 暂不开 ReLU (对齐 C 代码中间结果)
+        
+        .valid_in       (acc_valid_out),// ACC Valid
+        .acc_in         (final_acc_out),// 128-bit 累加器裸数据
+        
+        .valid_out      (ppu_valid_out),
+        .data_out       (ppu_data_out)
+    );
+
+    // =========================================================================
+    // 5.9. npu_deskew_buffer 例化 (反偏斜完美对齐)
+    // =========================================================================
+    npu_deskew_buffer #(
+        .COLS(4),
+        .DATA_WIDTH(8)
+    ) u_npu_deskew_buffer (
+        .clk                (clk),
+        .rst_n              (rst_n),
+        .ppu_data_in        (ppu_data_out),
+        .ppu_valid_in       (ppu_valid_out),
+        .deskewed_data_out  (deskewed_data_out),
+        .deskewed_valid_out (deskewed_valid_out)
+    );
+
+    // =========================================================================
+    // 5.10. 自动监控：见证 8-bit 对齐输出的奇迹时刻
+    // 尾部由于有有效信号，结果容易监控
+    // =========================================================================
+    always @(posedge clk) begin
+        if (deskewed_valid_out) begin
+            $display("[%0t] [De-skew] PERFECT ALIGNED 8-bit OUTPUT: Col0=%0d, Col1=%0d, Col2=%0d, Col3=%0d", 
+                     $time,
+                     $signed(deskewed_data_out[ 7: 0]),
+                     $signed(deskewed_data_out[15: 8]),
+                     $signed(deskewed_data_out[23:16]),
+                     $signed(deskewed_data_out[31:24]));
+        end
+    end
     // =========================================================================
     // 6. 波形转储
     // =========================================================================

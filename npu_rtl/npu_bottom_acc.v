@@ -36,7 +36,7 @@ module npu_bottom_acc #(
     output wire [COLS*PSUM_WIDTH-1:0]        acc_out,
     
     // 【新增】送给 PPU 的发令枪！每一列各自独立触发 1 拍！
-    output reg  [COLS-1:0]                   ppu_valid_out
+    output reg  [COLS-1:0]                   acc_valid_out
 );
 
     // 内部物理寄存器组：4 个独立的 32-bit 累加器
@@ -55,13 +55,13 @@ module npu_bottom_acc #(
                     // 复位：严格清零
                     acc_bank[i]      <= {PSUM_WIDTH{1'b0}};
                     mac_cnt[i]       <= 8'd0;
-                    ppu_valid_out[i] <= 1'b0;
+                    acc_valid_out[i] <= 1'b0;
                 end 
                 else if (preload_bias) begin
                     // 强制预装填态：主要用于初始化，确保计数器对齐
                     acc_bank[i]      <= bias_in[(i*PSUM_WIDTH) +: PSUM_WIDTH];
                     mac_cnt[i]       <= 8'd0;
-                    ppu_valid_out[i] <= 1'b0;
+                    acc_valid_out[i] <= 1'b0;
                 end 
                 else if (bottom_valid_in[i]) begin
                     // ===================================================
@@ -82,17 +82,17 @@ module npu_bottom_acc #(
                     // ===================================================
                     if (mac_cnt[i] == cfg_window_size - 1) begin
                         // 加满指定的次数了！通知后方的 PPU 来取数据！
-                        ppu_valid_out[i] <= 1'b1;
+                        acc_valid_out[i] <= 1'b1;
                         mac_cnt[i]       <= 8'd0; // 自动清零，下一拍完美衔接 Auto-Bias！
                     end else begin
                         // 还没加完，PPU 保持安静
-                        ppu_valid_out[i] <= 1'b0;
+                        acc_valid_out[i] <= 1'b0;
                         mac_cnt[i]       <= mac_cnt[i] + 8'd1;
                     end
                 end
                 else begin
                     // 没有有效输入时，清零给 PPU 的 valid，保持其他状态挂机
-                    ppu_valid_out[i] <= 1'b0;
+                    acc_valid_out[i] <= 1'b0;
                 end
             end
 
