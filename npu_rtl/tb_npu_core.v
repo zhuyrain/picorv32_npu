@@ -19,17 +19,26 @@ module tb_npu_core;
     // =========================================================================
     // 2. Line Buffer 控制与接口信号 (新增)
     // ==========================================
+    // 配置信号
+    reg  [5:0]  lb_cfg_line_width;
+    reg  [2:0]  lb_cfg_ic_groups; 
+    // 配置信号done
     reg         lb_shift_line_en;
     reg         lb_pixel_wr_en;
     reg  [31:0] lb_pixel_wr_data;
     reg  [5:0]  lb_window_base_x;
     reg  [1:0]  lb_kernel_kx;
     reg  [1:0]  lb_kernel_ky;
+    reg  [2:0]  lb_read_ic_group;
     wire [31:0] lb_window_pixel_out;
 
     // =========================================================================
     // 3. act_skew_buffer 与 sa_4_4 接口信号
     // =========================================================================
+    
+    // 配置信号
+    reg [5:0]   sa_cfg_weight_num;
+    // 配置信号done
     reg         pad_en;                              
     reg         act_valid_in;                        
     wire [31:0] act_in_flat = lb_window_pixel_out; // 【核心修改】直接连上 Line Buffer 的输出！
@@ -59,16 +68,22 @@ module tb_npu_core;
     // 4.1. npu_line_buffer 例化
     // =========================================================================
     npu_line_buffer #(
-        .IMG_WIDTH(32), .PAD_SIZE(1), .LINE_WIDTH(34), .DATA_WIDTH(32)
+        .MAX_LINE_WIDTH(34), 
+        .PAD_SIZE(1), 
+        .MAX_DATA_WIDTH(128),
+        .DATA_WIDTH(32)
     ) u_npu_line_buffer (
         .clk              (clk),
         .rst_n            (rst_n),
+        .cfg_line_width   (lb_cfg_line_width),
+        .cfg_ic_groups    (lb_cfg_ic_groups),
         .shift_line_en    (lb_shift_line_en),
         .pixel_wr_en      (lb_pixel_wr_en),
         .pixel_wr_data    (lb_pixel_wr_data),
         .window_base_x    (lb_window_base_x),
         .kernel_kx        (lb_kernel_kx),
         .kernel_ky        (lb_kernel_ky),
+        .read_ic_group    (lb_read_ic_group),
         .window_pixel_out (lb_window_pixel_out)
     );
 
@@ -94,6 +109,7 @@ module tb_npu_core;
     sa_4_4 u_sa_4_4 (
         .clk              (clk),
         .rst_n            (rst_n),
+        .cfg_weight_num   (sa_cfg_weight_num),
         .weight_en        (sa_weight_en),
         .left_act_in      (act_out_skewed),           
         .left_act_valid   (act_valid_out_skewed),     
@@ -187,7 +203,8 @@ module tb_npu_core;
         input integer n;
         integer i;
         begin
-            for (i = 0; i < n; i = i + 1) @(posedge clk);
+            for (i = 0; i < n; i = i + 1) 
+                @(posedge clk);
         end
     endtask
 
@@ -312,10 +329,10 @@ module tb_npu_core;
         // 权重装填完毕后，还需要发送空数据，让最上面送进去的权重彻底流到底部的 Row 3
         sa_top_weight_in <= 128'd0;
         sa_weight_en <= 1'b0;
-        wait_cycles(3); 
+        wait_cycles(0); 
         
         
-        log_msg("Weight loading complete. Switching to compute mode.");
+        log_msg("Weight loading complete.");
 
         // -------------------------------------------------------
         // Phase 4: 偏置预装填
@@ -326,14 +343,22 @@ module tb_npu_core;
         preload_bias <= 1'b1;
         @(posedge clk);
         preload_bias <= 1'b0;
-
+        log_msg("Bias loading complete. Switching to compute mode.");
         // -------------------------------------------------------
         // Phase 5: 虚拟 DMA 预装填 Line Buffer
         // -------------------------------------------------------
         log_msg("=== Phase 5: Virtual DMA Loading Line Buffer ===");
-        
+        // 0. 加载line buffer配置信息 & sa4_4维护权重数量
+        lb_cfg_line_width <= 'd34;
+        lb_cfg_ic_groups <= 'd1;
+        lb_read_ic_group <= 'd0;
+        sa_cfg_weight_num <= 6'd9;
+        @(posedge clk); 
+        @(posedge clk); 
         // 1. Shift 一次，让 Row 0 成为全 0 (Top Padding)
-        lb_shift_line_en <= 1'b1; @(posedge clk); lb_shift_line_en <= 1'b0;
+        lb_shift_line_en <= 1'b1; 
+        @(posedge clk); 
+        lb_shift_line_en <= 1'b0;
 
         // 2. 将 IMG_ROW_1 填入 Line Buffer 的最新行
         for (x = 0; x < 32; x = x + 1) begin
@@ -344,7 +369,9 @@ module tb_npu_core;
         lb_pixel_wr_en <= 1'b0;
 
         // 3. 换行 Shift，准备接收第二行
-        lb_shift_line_en <= 1'b1; @(posedge clk); lb_shift_line_en <= 1'b0;
+        lb_shift_line_en <= 1'b1; 
+        @(posedge clk); 
+        lb_shift_line_en <= 1'b0;
 
         // 4. 将 IMG_ROW_2 填入 Line Buffer
         for (x = 0; x < 32; x = x + 1) begin
@@ -373,9 +400,12 @@ module tb_npu_core;
         act_valid_in <= 1'b0;
         
         // 等待整个流水线 (阵列 + ACC + PPU + Deskew) 排空
-        wait_cycles(20);
+        // 流水线延迟 7 + 底部加法器延迟 1 + PPU延迟2 = 10
+        // 虽然上面的 @(posedge clk); 已经等待了一个时钟上升沿
+        // 但是165行的检测信号也需要1拍才能检测到有效信号，所以最终还是需要wait_cycles(10)
+        wait_cycles(10);
         log_msg("=== Simulation Complete ===");
-        #50; $finish;
+        $finish;
     end
 
     // =========================================================================

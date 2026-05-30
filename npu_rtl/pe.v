@@ -1,13 +1,20 @@
 `timescale 1ns / 1ps
 
 module pe #(
-    parameter WEIGHT_NUM = 9  // 参数化：内部存储的权重数量 (3x3卷积核默认9个)
+    // 物理层面上焊死的最大权重容量（支持第二层的 36 个，甚至可以改得更大）
+    parameter MAX_WEIGHTS = 36  
 )(
     input  wire        clk,
     input  wire        rst_n,
     
     // ==========================================
-    // 控制与数据驱动令牌 (Tokens)
+    // 0. 动态配置接口
+    // ==========================================
+    // 当前网络层实际需要循环的权重数量 (例如第一层填 9，第二层填 36)
+    input  wire [5:0]  cfg_weight_num, 
+
+    // ==========================================
+    // 1. 控制与数据驱动令牌 (Tokens)
     // ==========================================
     input  wire        weight_en_in,
     output reg         weight_en_out,
@@ -16,13 +23,13 @@ module pe #(
     output reg         act_valid_out,  // 传递给下一列
     
     // ==========================================
-    // 独立通道 1：权重配置专用总线
+    // 2. 独立通道 1：权重配置专用总线
     // ==========================================
     input  wire [31:0] weight_in,
     output reg  [31:0] weight_out,
     
     // ==========================================
-    // 独立通道 2：激活值与部分和数据总线
+    // 3. 独立通道 2：激活值与部分和数据总线
     // ==========================================
     input  wire [7:0]  act_in,
     output reg  [7:0]  act_out,
@@ -35,11 +42,11 @@ module pe #(
     // 内部存储与状态 (Local Register File)
     // ==========================================
     // 1. PE 内部的局部权重寄存器堆 (Cow Buffer)
-    reg signed [7:0] weight_buf [0:WEIGHT_NUM-1];
+    reg signed [7:0] weight_buf [0:MAX_WEIGHTS-1];
     
-    // 2. 本地权重索引指针 (读写共用)
-    // 当 weight_en=1 时，作为写指针；当 act_valid=1 时，作为读指针
-    reg [3:0] local_weight_idx; 
+    // 2. 读写指针完全分离！
+    reg [5:0] wr_weight_idx; // 写指针：由 weight_en 驱动
+    reg [5:0] rd_weight_idx; // 读指针：由 act_valid 驱动
 
     integer i;
 
@@ -50,8 +57,8 @@ module pe #(
     wire signed [7:0]  act_in_s  = $signed(act_in);
     wire signed [31:0] psum_in_s = $signed(psum_in);
     
-    // 从 Cow Buffer 中实时取出当前指针指向的权重
-    wire signed [7:0]  current_weight = weight_buf[local_weight_idx];
+    // 组合逻辑实时读取【读指针】指向的权重
+    wire signed [7:0]  current_weight = weight_buf[rd_weight_idx];
 
     wire signed [15:0] mult_res;
     wire signed [31:0] add_res;
@@ -60,7 +67,6 @@ module pe #(
     // 如果当前没有有效的激活数据 (act_valid_in == 0)，说明处于换行气泡或纯传权重态。
     // 此时乘法结果强行置 0，保证 Psum 瀑布能够干净、无损地向下流动透传！
     assign mult_res = act_valid_in ? (act_in_s * current_weight) : 16'sd0;
-    // 精准控制初始的偏置值从上到下是有效+3个0的配置
     assign add_res  = psum_in_s + mult_res;
 
     // ==========================================
@@ -73,8 +79,11 @@ module pe #(
             psum_out      <= 32'd0;
             weight_en_out <= 1'b0;
             weight_out    <= 32'd0;
-            local_weight_idx <= 4'd0;
-            for (i = 0; i < WEIGHT_NUM; i = i + 1) begin
+            
+            wr_weight_idx <= 6'd0; // 写指针复位
+            rd_weight_idx <= 6'd0; // 读指针复位
+            
+            for (i = 0; i < MAX_WEIGHTS; i = i + 1) begin
                 weight_buf[i] <= 8'sd0;
             end
         end else begin
@@ -84,27 +93,26 @@ module pe #(
             act_out       <= act_in;
             act_valid_out <= act_valid_in;
             
-            // --- 2. 独立总线的操作：权重配置态 ---
+            // --- 2. 权重配置态 (独立控制 写指针) ---
             if (weight_en_in) begin
                 // 将低 8 位写进 Cow Buffer
-                weight_buf[local_weight_idx] <= $signed(weight_in[7:0]);
-                // 高 24 位向下移位，传给下一行
+                weight_buf[wr_weight_idx] <= $signed(weight_in[7:0]);
                 weight_out <= {8'd0, weight_in[31:8]};
                 
-                // 写指针自增逻辑
-                if (local_weight_idx == WEIGHT_NUM - 1)
-                    local_weight_idx <= 4'd0;
+                // 写指针根据外部配置的动态边界进行环形自增
+                if (wr_weight_idx == cfg_weight_num - 1)
+                    wr_weight_idx <= 6'd0;
                 else
-                    local_weight_idx <= local_weight_idx + 4'd1;
+                    wr_weight_idx <= wr_weight_idx + 6'd1;
             end 
             
-            // --- 3. 独立总线的操作：数据驱动计算态 ---
-            else if (act_valid_in) begin
-                // 只有当有效令牌到达时，读指针才滑动，完美解决列之间的时间 Skew 错位！
-                if (local_weight_idx == WEIGHT_NUM - 1)
-                    local_weight_idx <= 4'd0;
+            // --- 3. 数据驱动计算态 (独立控制 读指针) ---
+            if (act_valid_in) begin
+                // 读指针同样根据动态边界进行环形自增，与写指针互不干扰！
+                if (rd_weight_idx == cfg_weight_num - 1)
+                    rd_weight_idx <= 6'd0;
                 else
-                    local_weight_idx <= local_weight_idx + 4'd1;
+                    rd_weight_idx <= rd_weight_idx + 6'd1;
             end
             
             // --- 4. 永不停止的 Psum 瀑布 ---
