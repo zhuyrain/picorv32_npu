@@ -237,7 +237,7 @@ module tb_npu_core;
     // =========================================================================
     initial begin
         integer col, r, cyc, x, kx, ky;
-        
+
         // -------------------------------------------------------
         // Phase 0 & 1: 初始化与复位
         // -------------------------------------------------------
@@ -316,23 +316,33 @@ module tb_npu_core;
         // Phase 3: 权重加载
         // -------------------------------------------------------
         log_msg("=== Phase 3: Weight Loading ===");
-        sa_weight_en = 1'b1;
+        
 
         // 连续 9 个周期，依次将不同 cycle 的权重打包从顶部喂入
         for (cyc = 0; cyc < 9; cyc = cyc + 1) begin
             for (col = 0; col < 4; col = col + 1) begin
-                sa_top_weight_in[(col*32) +: 32] = pack4x8(W[3][col][cyc], W[2][col][cyc], W[1][col][cyc], W[0][col][cyc]);
+                sa_top_weight_in[(col*32) +: 32] <= pack4x8(W[3][col][cyc], W[2][col][cyc], W[1][col][cyc], W[0][col][cyc]);
             end
+            sa_weight_en <= 1'b1;
             @(posedge clk);
         end
 
         // 权重装填完毕后，还需要发送空数据，让最上面送进去的权重彻底流到底部的 Row 3
         sa_top_weight_in <= 128'd0;
         sa_weight_en <= 1'b0;
-        wait_cycles(0); 
-        
+        //等待一个时钟周期，最后一个权重才写完毕，才能打印监控数据，否则最后一个权重为0
+        wait_cycles(1); 
+
         
         log_msg("Weight loading complete.");
+
+        // 【硬核 Debug】：直接以后门方式打印 PE(0,0) 肚子里的权重！
+        $display("==== [DEBUG] PE(0,0) 内部真实装填的权重 ====");
+        for (int dbg_i = 0; dbg_i < 9; dbg_i++) begin
+            $display("  weight_buf[%0d] = %0d", dbg_i, 
+                     $signed(tb_npu_core.u_sa_4_4.ROW[0].COL[0].u_pe.weight_buf[dbg_i]));
+        end
+        $display("============================================");
 
         // -------------------------------------------------------
         // Phase 4: 偏置预装填
@@ -353,8 +363,6 @@ module tb_npu_core;
         lb_cfg_ic_groups <= 'd1;
         lb_read_ic_group <= 'd0;
         sa_cfg_weight_num <= 6'd9;
-        @(posedge clk); 
-        @(posedge clk); 
         // 1. Shift 一次，让 Row 0 成为全 0 (Top Padding)
         lb_shift_line_en <= 1'b1; 
         @(posedge clk); 
