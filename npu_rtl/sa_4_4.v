@@ -4,6 +4,9 @@ module sa_4_4 (
     input  wire        clk,
     input  wire        rst_n,
 
+    // 当前网络层实际需要循环的权重数量 (例如第一层填 9，第二层填 36)
+    input  wire [5:0]  cfg_weight_num, 
+
     // --- 全局控制 ---
     input  wire        weight_en, // 1: 配置权重模式; 0: 计算模式
 
@@ -83,6 +86,8 @@ module sa_4_4 (
                     .clk            (clk),
                     .rst_n          (rst_n),
                     
+                    // 配置流
+                    .cfg_weight_num (cfg_weight_num),
                     // 控制流
                     .weight_en_in   (pe_wen_in),
                     .weight_en_out  (weight_en_wire[r][c]),

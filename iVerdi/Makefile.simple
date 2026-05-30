@@ -27,6 +27,7 @@ SRC_FILES_2 = $(SRC_ROOT_NPU)/pe.v \
 			  $(SRC_ROOT_NPU)/npu_bottom_acc.v \
 			  $(SRC_ROOT_NPU)/npu_ppu.v \
 			  $(SRC_ROOT_NPU)/npu_deskew_buffer.v \
+			  $(SRC_ROOT_NPU)/npu_line_buffer.v \
               $(SRC_ROOT_NPU)/tb_npu_core.v
 
 # 动态组装：根据 CASE 的值，把 SRC_FILES_1 或 SRC_FILES_2 赋值给 SRC_FILES
@@ -41,8 +42,16 @@ endif
 
 # 定义生成的可执行文件和波形文件名称
 TARGET    = sim.vvp
-WAVE_FILE = picorv32_soc.vcd
-WAVE_FILE_FSDB = picorv32_soc.fsdb
+WAVE_FILE = $(WAVE_FILE_$(CASE))
+WAVE_FILE_FSDB = $(WAVE_FILE_FSDB_$(CASE))
+
+# [配置 1] PicoRV32 SoC 完整仿真 (默认)
+WAVE_FILE_1 = picorv32_soc.vcd
+WAVE_FILE_FSDB_1 = picorv32_soc.fsdb
+
+# [配置 2] 裸核 NPU 子系统独立仿真 (上一步我们刚刚写的)
+WAVE_FILE_2 = tb_npu_core.vcd
+WAVE_FILE_FSDB_2 = tb_npu_core.fsdb
 
 # 默认目标：编译 -> 运行 -> 转化波形文件
 all: compile run conv
