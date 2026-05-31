@@ -174,7 +174,8 @@ module npu_axi_wrapper_lite (
             end else if (s_axi_rvalid_reg && s_axi_rready) begin
                 s_axi_rvalid_reg <= 1'b0; // 数据被主设备取走
             end
-
+        end
+    end
     // =========================================================
     // [模块 2]: NPU 内部算力引擎例化 (Datapath)
     // =========================================================
@@ -206,7 +207,8 @@ module npu_axi_wrapper_lite (
     npu_line_buffer #(
         .MAX_LINE_WIDTH(34), 
         .PAD_SIZE(1), 
-        .MAX_DATA_WIDTH(128)
+        .MAX_DATA_WIDTH(128),
+        .DATA_WIDTH(32)
         ) u_lb (
         .clk              (clk),
         .rst_n            (rst_n),
@@ -238,12 +240,12 @@ module npu_axi_wrapper_lite (
     sa_4_4 u_sa (
         .clk              (clk),
         .rst_n            (rst_n),
+        .cfg_weight_num   (sa_cfg_weight_num),
         .weight_en        (sa_weight_en),
         .left_act_in      (act_out_skewed),
         .left_act_valid   (act_valid_out_skewed),
         .top_weight_in    (sa_top_weight_in),
         .top_bias_in      (128'd0), 
-        .cfg_weight_num   (sa_cfg_weight_num),
         .bottom_psum_out  (sa_bottom_psum_out),
         .bottom_valid_out (sa_bottom_valid_out)
     );
@@ -260,7 +262,7 @@ module npu_axi_wrapper_lite (
         .bias_in         (acc_bias_in),
         .bottom_psum_in  (sa_bottom_psum_out),
         .acc_out         (final_acc_out),
-        .ppu_valid_out   (ppu_valid_trigger)
+        .acc_valid_out   (ppu_valid_trigger)
     );
 
     npu_ppu #(
@@ -268,8 +270,8 @@ module npu_axi_wrapper_lite (
         ) u_ppu (
         .clk            (clk),
         .rst_n          (rst_n),
-        .cfg_multiplier (reg_cfg_quant[15:0]),
-        .cfg_shift      (reg_cfg_quant[31:16][4:0]),
+        .cfg_multiplier ({16'b0,reg_cfg_quant[15:0]}),
+        .cfg_shift      (reg_cfg_quant[20:16]),
         .cfg_out_zp     (32'd0),
         .cfg_relu_en    (1'b0), // V1.0 暂不开启
         .valid_in       (ppu_valid_trigger),
@@ -329,7 +331,7 @@ module npu_axi_wrapper_lite (
             lb_pixel_wr_en <= 0;
             acc_preload_bias <= 0;
         end else begin
-            npu_done_pulse <= 0; // 默认清零脉冲
+            // npu_done_pulse <= 0; // 默认清零脉冲
 
             case (state)
                 S_IDLE: begin
@@ -375,6 +377,7 @@ module npu_axi_wrapper_lite (
                 end
 
                 S_LOAD_WEIGHT: begin
+                    acc_preload_bias <= 1'b0; // 撤销 装填 Bias 信号
                     sa_weight_en <= 0;
                     if (!ar_done) begin
                         m_axi_arvalid <= 1; m_axi_araddr <= weight_ptr;
@@ -477,9 +480,9 @@ module npu_axi_wrapper_lite (
                             out_ptr <= out_ptr + 4;
                             
                             // ----- 滑窗逻辑 -----
-                            if (ox == cfg_img_w - 1) begin
+                            if (ox == 0) begin
                                 ox <= 0; oy <= oy + 1;
-                                if (oy == cfg_img_h - 1) begin
+                                if (oy == 0) begin
                                     npu_done_pulse <= 1; // 算完啦！
                                     state <= S_IDLE;
                                 end else if (oy == cfg_img_h - 2) begin

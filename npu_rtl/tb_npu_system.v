@@ -89,7 +89,7 @@ module tb_npu_system;
             @(posedge clk);
             s_axi_arvalid <= 1'b0; s_axi_rready  <= 1'b1;
             wait (s_axi_rvalid);
-            data = s_axi_rdata; // 抓取读回的数据
+            data <= s_axi_rdata; // 抓取读回的数据
             @(posedge clk);
             s_axi_rready  <= 1'b0;
         end
@@ -157,13 +157,13 @@ module tb_npu_system;
     // 6. 主测试验证流程 (模拟 CPU 跑 C 代码)
     // =========================================================================
     initial begin
-        $dumpfile("npu_system.vcd");
+        $dumpfile("tb_npu_system.vcd");
         $dumpvars(0, tb_npu_system);
         
         // 0. 初始化
         s_axi_awvalid = 0; s_axi_wvalid = 0; s_axi_bready = 0;
         s_axi_arvalid = 0; s_axi_rready = 0;
-        
+        rst_n = 1'b0; // 【终极修复】：在 T=0 必须把复位信号拉低！！！
         #100; rst_n = 1'b1; #20;
 
         // 1. 后门注入 SRAM 数据
@@ -178,7 +178,7 @@ module tb_npu_system;
         
         axi_write(32'h0000_0014, {16'd32, 16'd32}); // H=32, W=32
         axi_write(32'h0000_001C, {16'd16, 16'd104});// Quant: Shift=16, Mult=104
-        axi_write(32'h0000_0020, {16'd0, 6'd9, 6'd34, 3'd1}); // Datapath: w_num=9, lb_w=34, ic_g=1
+        axi_write(32'h0000_0020, {16'd0, 6'd9, 6'd34, 1'd0, 3'd1}); // Datapath: w_num=9, lb_w=34, ic_g=1
         
         // 3. 发令枪：启动 NPU！
         $display("[%0t] [CPU] Firing NPU START Pulse!", $time);
@@ -206,11 +206,20 @@ module tb_npu_system;
         $display("=========================================================");
 
         #100;
-        $finish;
+        
     end
 
     initial begin
         #5000000;
+                // 5. 到 SRAM 结果区 0x0002_0000 收割成果！
+        $display("=========================================================");
+        $display("🎇 [Final Verify] Checking SRAM Output at 0x0002_0000 🎇");
+        $display("  Raw 32-bit Word = 0x%08h", u_axi_sram.ram['h20000 >> 2]);
+        $display("  Col0 (OC0) = %0d", $signed(u_axi_sram.ram['h20000 >> 2][ 7: 0]));
+        $display("  Col1 (OC1) = %0d", $signed(u_axi_sram.ram['h20000 >> 2][15: 8]));
+        $display("  Col2 (OC2) = %0d", $signed(u_axi_sram.ram['h20000 >> 2][23:16]));
+        $display("  Col3 (OC3) = %0d", $signed(u_axi_sram.ram['h20000 >> 2][31:24]));
+        $display("=========================================================");
         $display("[%0t] *** TIMEOUT ***", $time);
         $finish;
     end
