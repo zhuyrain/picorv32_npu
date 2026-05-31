@@ -299,9 +299,11 @@ module npu_axi_wrapper_lite (
     localparam S_LOAD_BIAS   = 3'd1;
     localparam S_LOAD_WEIGHT = 3'd2;
     localparam S_LOAD_ROW    = 3'd3;
-    localparam S_COMPUTE     = 3'd4;
-    localparam S_WAIT_DESKEW = 3'd5;
-    localparam S_WRITE_BACK  = 3'd6;
+    localparam S_SHIFT_LINE_INIT = 3'd4; // 【新增】
+    localparam S_COMPUTE     = 3'd5;
+    localparam S_WAIT_DESKEW = 3'd6;
+    localparam S_WRITE_BACK  = 3'd7;
+    
 
     reg [2:0] state;
     reg [15:0] ox, oy;
@@ -424,10 +426,10 @@ module npu_axi_wrapper_lite (
                             
                             if (pixel_cnt == cfg_img_w - 1) begin
                                 if (oy == 0 && !first_row_loaded) begin
-                                    lb_shift_line_en <= 1'b1;
+                                    // lb_shift_line_en <= 1'b1;  // ❌ 删掉这句害人的同时赋值&换行使能！
                                     pixel_cnt <= 0;
                                     first_row_loaded <= 1'b1;
-                                    // 保持状态，再读第二行
+                                    state <= S_SHIFT_LINE_INIT;   // ✅ 跳转到专用的延时滚动状态
                                 end else begin
                                     lb_window_base_x <= ox[5:0];
                                     compute_cnt <= 0;
@@ -437,9 +439,14 @@ module npu_axi_wrapper_lite (
                         end
                     end
                 end
-
+                S_SHIFT_LINE_INIT: begin
+                    lb_pixel_wr_en   <= 1'b0; // 停止写像素
+                    lb_shift_line_en <= 1'b1; // 执行安全的换行滚动！
+                    state <= S_LOAD_ROW;      // 回到装载态，去读真正的第二行
+                end
                 S_COMPUTE: begin
                     lb_pixel_wr_en <= 0;
+                    lb_shift_line_en <= 1'b0; // 【终极修复】：确保滚动只发生一拍！
                     
                     lb_kernel_ky <= compute_cnt / 3;
                     lb_kernel_kx <= compute_cnt % 3;
@@ -480,9 +487,9 @@ module npu_axi_wrapper_lite (
                             out_ptr <= out_ptr + 4;
                             
                             // ----- 滑窗逻辑 -----
-                            if (ox == 0) begin
+                            if (ox == cfg_img_w - 1) begin
                                 ox <= 0; oy <= oy + 1;
-                                if (oy == 0) begin
+                                if (oy == cfg_img_h - 1) begin
                                     npu_done_pulse <= 1; // 算完啦！
                                     state <= S_IDLE;
                                 end else if (oy == cfg_img_h - 2) begin

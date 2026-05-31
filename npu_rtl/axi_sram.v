@@ -37,11 +37,12 @@ module axi_sram #(
     // 物理内存数组 (以 32-bit Word 为单位，支持字节写使能的双端口 RAM 推断)
     localparam WORD_DEPTH = MEM_SIZE / 4;
     reg [31:0] ram [0:WORD_DEPTH-1];
-
-    // FPGA 魔法：在综合/仿真时将 hex 文件烙印进 BRAM
-    initial begin
-        $readmemh("firmware.hex", ram);
-    end
+    
+    // 改为在顶层tb中统一读取
+    // // FPGA 魔法：在综合/仿真时将 hex 文件烙印进 BRAM
+    // initial begin
+    //     $readmemh("firmware.hex", ram);
+    // end
 
     // 恒定响应：OKAY (2'b00) 表示执行操作的状态 OKEY EXOKAY SLVERR DECERR 
     assign axi_bresp = 2'b00;
