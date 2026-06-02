@@ -63,7 +63,7 @@ module npu_axi_wrapper_lite (
     reg [31:0] reg_cfg_img_dim;    // 0x14: [31:16] H, [15:0] W
     reg [31:0] reg_cfg_channels;   // 0x18: [31:16] Out_CH, [15:0] In_CH
     reg [31:0] reg_cfg_quant;      // 0x1C: [31:16] Shift, [15:0] Multiplier
-    reg [31:0] reg_cfg_datapath;   // 0x20: [15:10] weight_num, [9:4] line_width, [2:0] ic_groups
+    reg [31:0] reg_cfg_datapath;   // 0x20: [31:16] out_stride, [15:10] weight_num, [9:4] line_width, [2:0] ic_groups
 
     wire        npu_start_pulse   = reg_ctrl_status[0]; 
     reg         npu_busy;                             
@@ -72,6 +72,7 @@ module npu_axi_wrapper_lite (
     // 提取配置字段供内部 Datapath 和 FSM 使用
     wire [15:0] cfg_img_h         = reg_cfg_img_dim[31:16];
     wire [15:0] cfg_img_w         = reg_cfg_img_dim[15:0];
+    wire [15:0] out_stride        = reg_cfg_datapath[31:16];
     wire [5:0]  sa_cfg_weight_num = reg_cfg_datapath[15:10];
     wire [5:0]  lb_cfg_line_width = reg_cfg_datapath[9:4];
     wire [2:0]  lb_cfg_ic_groups  = reg_cfg_datapath[2:0];
@@ -333,7 +334,7 @@ module npu_axi_wrapper_lite (
             lb_pixel_wr_en <= 0;
             acc_preload_bias <= 0;
         end else begin
-            // npu_done_pulse <= 0; // 默认清零脉冲
+            npu_done_pulse <= 0; // 默认清零脉冲
 
             case (state)
                 S_IDLE: begin
@@ -484,7 +485,7 @@ module npu_axi_wrapper_lite (
                         m_axi_bready <= 1;
                         if (m_axi_bvalid && m_axi_bready) begin
                             m_axi_bready <= 0; aw_done <= 0; w_done <= 0;
-                            out_ptr <= out_ptr + 4;
+                            out_ptr <= out_ptr + out_stride;
                             
                             // ----- 滑窗逻辑 -----
                             if (ox == cfg_img_w - 1) begin

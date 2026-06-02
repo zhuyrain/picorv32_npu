@@ -97,24 +97,14 @@ module tb_npu_system;
         end
     endtask
 
-
-
-
-
-
-            
-
-            
-
-
-        // FPGA 魔法：在综合/仿真时将 hex 文件烙印进 BRAM
-        // --- 1. 注入 Bias (存放到 0x0000_0000 开始) ---
-        // --- 2. 注入 Weights (存放到 0x0000_1000 开始，词索引 0x400) ---
-        // --- 3. 注入 Image Activations (存放到 0x0001_0000 开始，词索引 0x4000) ---
-        initial begin
-            $readmemh("data.hex", u_axi_sram.ram);
-                    $display("[%0t] [Backdoor] SRAM Memory initialized with Real Data!", $time);
-        end
+    // FPGA 魔法：在综合/仿真时将 hex 文件烙印进 BRAM
+    // --- 1. 注入 Bias (存放到 0x0000_0000 开始) ---
+    // --- 2. 注入 Weights (存放到 0x0000_1000 开始，词索引 0x400) ---
+    // --- 3. 注入 Image Activations (存放到 0x0001_0000 开始，词索引 0x4000) ---
+    initial begin
+        $readmemh("data.hex", u_axi_sram.ram);
+                $display("[%0t] [Backdoor] SRAM Memory initialized with Real Data!", $time);
+    end
 
     // =========================================================================
     // 6. 主测试验证流程 (模拟 CPU 跑 C 代码)
@@ -134,10 +124,8 @@ module tb_npu_system;
         rst_n = 1'b0; // 【终极修复】：在 T=0 必须把复位信号拉低！！！
         #100; rst_n = 1'b1; #20;
 
-
-
-        // 2. CPU 配置 NPU 寄存器
-        $display("[%0t] [CPU] Configuring NPU Registers...", $time);
+        // 2.1 CPU 配置 NPU 寄存器
+        $display("[%0t] [CPU] FIRST ROUND: Configuring NPU Registers...", $time);
         axi_write(32'h0000_000C, 32'h0000_0000); // Bias Base
         axi_write(32'h0000_0008, 32'h0000_1000); // Weight Base
         axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
@@ -145,10 +133,10 @@ module tb_npu_system;
         
         axi_write(32'h0000_0014, {16'd32, 16'd32}); // H=32, W=32
         axi_write(32'h0000_001C, {16'd16, 16'd104});// Quant: Shift=16, Mult=104
-        axi_write(32'h0000_0020, {16'd0, 6'd9, 6'd34, 1'd0, 3'd1}); // Datapath: w_num=9, lb_w=34, ic_g=1
+        axi_write(32'h0000_0020, {16'd16, 6'd9, 6'd34, 1'd0, 3'd1}); // Datapath: w_num=9, lb_w=34, ic_g=1
         
         // 3. 发令枪：启动 NPU！
-        $display("[%0t] [CPU] Firing NPU START Pulse!", $time);
+        $display("[%0t] [CPU] FIRST ROUND: Firing NPU START Pulse!", $time);
         axi_write(32'h0000_0000, 32'h0000_0001);
 
         // 4. CPU 轮询死等 NPU 完工 (Polling)
@@ -160,7 +148,85 @@ module tb_npu_system;
                 axi_read(32'h0000_0000, status);
             end
         end
-        $display("[%0t] [CPU] NPU DONE Interrupt Received!", $time);
+        $display("[%0t] [CPU] FIRST ROUND: NPU DONE Interrupt Received!", $time);
+
+        // 2.2 CPU 配置 NPU 寄存器
+        // 清除枪：清除 NPU Done 信号
+        $display("[%0t] [CPU] SECOND ROUND: Clean NPU Done Signal!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0004);
+        // 3. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] SECOND ROUND: Configuring NPU Registers...", $time);
+        axi_write(32'h0000_000C, 32'h0000_0010); // Bias Base
+        axi_write(32'h0000_0008, 32'h0000_1090); // Weight Base
+        // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
+        axi_write(32'h0000_0010, 32'h0002_0004); // Out Base
+        
+        // 3. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] SECOND ROUND: Firing NPU START Pulse!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0001);
+
+        // 4. CPU 轮询死等 NPU 完工 (Polling)
+        begin
+            reg [31:0] status;
+            status = 0;
+            while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
+                #100; // 等一会再查，别把总线占满了
+                axi_read(32'h0000_0000, status);
+            end
+        end
+        $display("[%0t] [CPU] SECOND ROUND: NPU DONE Interrupt Received!", $time);
+
+        // 2.3 CPU 配置 NPU 寄存器
+        // 清除枪：清除 NPU Done 信号
+        $display("[%0t] [CPU] THIRD ROUND: Clean NPU Done Signal!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0004);
+        // 3. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] THIRD ROUND: Configuring NPU Registers...", $time);
+        axi_write(32'h0000_000C, 32'h0000_0020); // Bias Base
+        axi_write(32'h0000_0008, 32'h0000_1120); // Weight Base
+        // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
+        axi_write(32'h0000_0010, 32'h0002_0008); // Out Base
+        
+        // 3. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] THIRD ROUND: Firing NPU START Pulse!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0001);
+
+        // 4. CPU 轮询死等 NPU 完工 (Polling)
+        begin
+            reg [31:0] status;
+            status = 0;
+            while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
+                #100; // 等一会再查，别把总线占满了
+                axi_read(32'h0000_0000, status);
+            end
+        end
+        $display("[%0t] [CPU] THIRD ROUND: NPU DONE Interrupt Received!", $time);
+
+        // 2.4 CPU 配置 NPU 寄存器
+        // 清除枪：清除 NPU Done 信号
+        $display("[%0t] [CPU] FORTH ROUND: Clean NPU Done Signal!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0004);
+        // 3. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] FORTH ROUND: Configuring NPU Registers...", $time);
+        axi_write(32'h0000_000C, 32'h0000_0030); // Bias Base
+        axi_write(32'h0000_0008, 32'h0000_11B0); // Weight Base
+        // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
+        axi_write(32'h0000_0010, 32'h0002_000C); // Out Base
+        
+        // 3. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] FORTH ROUND: Firing NPU START Pulse!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0001);
+
+        // 4. CPU 轮询死等 NPU 完工 (Polling)
+        begin
+            reg [31:0] status;
+            status = 0;
+            while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
+                #100; // 等一会再查，别把总线占满了
+                axi_read(32'h0000_0000, status);
+            end
+        end
+        $display("[%0t] [CPU] FORTH ROUND: NPU DONE Interrupt Received!", $time);
 
         // 5. 到 SRAM 结果区 0x0002_0000 收割成果！
         $display("=========================================================");
@@ -175,11 +241,11 @@ module tb_npu_system;
         // -----------------------------------------------------------
         // 自动化导出 1024 个结果到 txt 文件，用于 C Golden Model 比对
         // -----------------------------------------------------------
-        $display("💾 Dumping 1024 words to verilog_result.txt for verification...");
+        $display("💾 Dumping 4096 words to verilog_result.txt for verification...");
         fd = $fopen("verilog_result.txt", "w");
         
         if (fd) begin
-            for (i = 0; i < 1024; i = i + 1) begin
+            for (i = 0; i < 4096; i = i + 1) begin
                 // 使用 %08X 输出 8 位大写十六进制，与 C 语言严丝合缝对齐
                 // 地址累加逻辑：起始 Word 索引 ('h20000 >> 2) 加上偏移量 i
                 $fdisplay(fd, "%08X", u_axi_sram.ram[('h20000 >> 2) + i]);
