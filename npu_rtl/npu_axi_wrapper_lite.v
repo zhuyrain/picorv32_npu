@@ -271,7 +271,7 @@ module npu_axi_wrapper_lite (
         .window_base_x    (lb_window_base_x),
         .kernel_kx        (lb_kernel_kx),
         .kernel_ky        (lb_kernel_ky),
-        .read_ic_group    (lb_read_ic_group),        // V1.0 锁定单组
+        .read_ic_group    (lb_read_ic_group),
         .window_pixel_out (lb_window_pixel_out)
     );
 
@@ -307,7 +307,7 @@ module npu_axi_wrapper_lite (
         ) u_acc (
         .clk             (clk),
         .rst_n           (rst_n),
-        .cfg_window_size (8'd9), // 固定 9 拍一个窗口
+        .cfg_window_size ({2'b0, sa_cfg_weight_num}), // 固定 9 拍一个窗口
         .preload_bias    (acc_preload_bias),
         .bottom_valid_in (sa_bottom_valid_out),
         .bias_in         (acc_bias_in),
@@ -363,6 +363,7 @@ module npu_axi_wrapper_lite (
     reg [2:0]  pack_cnt;         // 用于 4次32位 拼 128位
     reg [5:0]  weight_cycle_cnt; // 记录配了第几组权重
     reg [15:0] pixel_cnt;
+    reg [2:0]  ig_cnt; // 记录当前读取到了该像素的第几个通道组
 
     reg        ar_done, aw_done, w_done;
     reg        first_row_loaded;
@@ -388,6 +389,8 @@ always @(posedge clk or negedge rst_n) begin
             lb_kernel_kx <= 0;
             lb_kernel_ky <= 0;
             lb_read_ic_group <= 0;
+
+            ig_cnt <= 3'd0;
         end else begin
             npu_done_pulse <= 0; // 默认清零脉冲
 
@@ -407,6 +410,12 @@ always @(posedge clk or negedge rst_n) begin
                         ox <= 0; oy <= 0;
                         pack_cnt <= 0; weight_cycle_cnt <= 0;
                         state <= S_LOAD_BIAS;
+
+                        // 坐标寄存器复位
+                        lb_kernel_kx <= 0;
+                        lb_kernel_ky <= 0;
+                        lb_read_ic_group <= 0;
+                        ig_cnt <= 0;
                     end
                 end
 
@@ -478,26 +487,37 @@ always @(posedge clk or negedge rst_n) begin
                         if (m_axi_rvalid && m_axi_rready) begin
                             m_axi_rready <= 0; ar_done <= 0;
                             lb_pixel_wr_en <= 1'b1; // LB 在下个沿吃数据
-                            act_ptr <= act_ptr + 4;
-                            pixel_cnt <= pixel_cnt + 1;
+                            act_ptr <= act_ptr + 4; // 地址永远无脑 +4
                             
-                            if (pixel_cnt == cfg_img_w - 1) begin
-                                if (oy == 0 && !first_row_loaded) begin
-                                    pixel_cnt <= 0;
-                                    first_row_loaded <= 1'b1;
-                                    state <= S_SHIFT_LINE_INIT;   // 跳转到专用的延时滚动状态
-                                end else begin
-                                    // 数据准备就绪，进军阵列！
-                                    lb_window_base_x <= ox[5:0];
-                                    
-                                    // 【核心重构】：提前准备好 3D 嵌套循环的第 0 拍坐标！
-                                    lb_kernel_kx     <= 2'd0;
-                                    lb_kernel_ky     <= 2'd0;
-                                    lb_read_ic_group <= 3'd0;
-                                    act_valid_in <= 1'b1; 
-                                    state <= S_COMPUTE;
+                            // 【终极重构】：组装嵌套逻辑！
+                            if (ig_cnt == lb_cfg_ic_groups - 1) begin
+                                // 这个像素的所有通道组（比如4组）都读齐了！
+                                ig_cnt <= 3'd0;
+                                pixel_cnt <= pixel_cnt + 1; // 真正的物理像素坐标才 +1
+                                
+                                if (pixel_cnt == cfg_img_w - 1) begin
+                                    // 读完一整行的所有通道了！
+                                    if (oy == 0 && !first_row_loaded) begin
+                                        pixel_cnt <= 0;
+                                        first_row_loaded <= 1'b1;
+                                        state <= S_SHIFT_LINE_INIT;   // 跳转到专用的延时滚动状态
+                                    end else begin
+                                        // 数据准备就绪，进军阵列！
+                                        lb_window_base_x <= ox[5:0];
+
+                                        // 【核心重构】：提前准备好 3D 嵌套循环的第 0 拍坐标！
+                                        lb_kernel_kx     <= 2'd0;
+                                        lb_kernel_ky     <= 2'd0;
+                                        lb_read_ic_group <= 3'd0;
+                                        act_valid_in <= 1'b1; 
+                                        state <= S_COMPUTE;
+                                    end
                                 end
+                            end else begin
+                                // 同一个像素的其他通道组还没读完，继续读！
+                                ig_cnt <= ig_cnt + 3'd1;
                             end
+                            
                         end
                     end
                 end
