@@ -133,7 +133,7 @@ module tb_npu_system;
         
         axi_write(32'h0000_0014, {16'd16, 16'd16}); // H=32, W=32
         axi_write(32'h0000_001C, {16'd16, 16'd177});// Quant: Shift=16, Mult=104
-        axi_write(32'h0000_0020, {16'd4, 6'd36, 6'd18, 1'd0, 3'd4}); // Datapath: out_stride=4, w_num=36, lb_w=34, ic_g=1
+        axi_write(32'h0000_0020, {16'd32, 6'd36, 6'd18, 1'd0, 3'd4}); // Datapath: out_stride=4, w_num=36, lb_w=34, ic_g=1
         
         // 3. 发令枪：启动 NPU！
         $display("[%0t] [CPU] FIRST ROUND: Firing NPU START Pulse!", $time);
@@ -150,187 +150,181 @@ module tb_npu_system;
         end
         $display("[%0t] [CPU] FIRST ROUND: NPU DONE Interrupt Received!", $time);
 
-        // // 2.2 CPU 配置 NPU 寄存器
-        // // 清除枪：清除 NPU Done 信号
-        // $display("[%0t] [CPU] SECOND ROUND: Clean NPU Done Signal!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0004);
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] SECOND ROUND: Configuring NPU Registers...", $time);
-        // axi_write(32'h0000_000C, 32'h0000_0010); // Bias Base
-        // axi_write(32'h0000_0008, 32'h0000_1090); // Weight Base
-        // // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
-        // axi_write(32'h0000_0010, 32'h0002_0004); // Out Base
-        
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] SECOND ROUND: Firing NPU START Pulse!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0001);
-
-        // // 4. CPU 轮询死等 NPU 完工 (Polling)
-        // begin
-        //     reg [31:0] status;
-        //     status = 0;
-        //     while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
-        //         #100; // 等一会再查，别把总线占满了
-        //         axi_read(32'h0000_0000, status);
-        //     end
-        // end
-        // $display("[%0t] [CPU] SECOND ROUND: NPU DONE Interrupt Received!", $time);
-
-        // // 2.3 CPU 配置 NPU 寄存器
-        // // 清除枪：清除 NPU Done 信号
-        // $display("[%0t] [CPU] THIRD ROUND: Clean NPU Done Signal!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0004);
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] THIRD ROUND: Configuring NPU Registers...", $time);
-        // axi_write(32'h0000_000C, 32'h0000_0020); // Bias Base
-        // axi_write(32'h0000_0008, 32'h0000_1120); // Weight Base
-        // // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
-        // axi_write(32'h0000_0010, 32'h0002_0008); // Out Base
-        
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] THIRD ROUND: Firing NPU START Pulse!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0001);
-
-        // // 4. CPU 轮询死等 NPU 完工 (Polling)
-        // begin
-        //     reg [31:0] status;
-        //     status = 0;
-        //     while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
-        //         #100; // 等一会再查，别把总线占满了
-        //         axi_read(32'h0000_0000, status);
-        //     end
-        // end
-        // $display("[%0t] [CPU] THIRD ROUND: NPU DONE Interrupt Received!", $time);
-
-        // // 2.4 CPU 配置 NPU 寄存器
-        // // 清除枪：清除 NPU Done 信号
-        // $display("[%0t] [CPU] FORTH ROUND: Clean NPU Done Signal!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0004);
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] FORTH ROUND: Configuring NPU Registers...", $time);
-        // axi_write(32'h0000_000C, 32'h0000_0030); // Bias Base
-        // axi_write(32'h0000_0008, 32'h0000_11B0); // Weight Base
-        // // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
-        // axi_write(32'h0000_0010, 32'h0002_000C); // Out Base
-        
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] FORTH ROUND: Firing NPU START Pulse!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0001);
-
-        // // 4. CPU 轮询死等 NPU 完工 (Polling)
-        // begin
-        //     reg [31:0] status;
-        //     status = 0;
-        //     while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
-        //         #100; // 等一会再查，别把总线占满了
-        //         axi_read(32'h0000_0000, status);
-        //     end
-        // end
-        // $display("[%0t] [CPU] FORTH ROUND: NPU DONE Interrupt Received!", $time);
-
-        // // 2.1 CPU 配置 NPU 寄存器
-        // $display("[%0t] [CPU] FIRST ROUND: Configuring NPU Registers...", $time);
-        // axi_write(32'h0000_000C, 32'h0000_0000); // Bias Base
-        // axi_write(32'h0000_0008, 32'h0000_1000); // Weight Base
+        // 2.2 清除枪：清除 NPU Done 信号
+        $display("[%0t] [CPU] SECOND ROUND: Clean NPU Done Signal!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0004);
+        // 3. CPU 配置 NPU 寄存器
+        $display("[%0t] [CPU] SECOND ROUND: Configuring NPU Registers...", $time);
+        axi_write(32'h0000_000C, 32'h0000_0010); // Bias Base
+        axi_write(32'h0000_0008, 32'h0000_1240); // Weight Base
         // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
-        // axi_write(32'h0000_0010, 32'h0002_0000); // Out Base
+        axi_write(32'h0000_0010, 32'h0002_0004); // Out Base
         
-        // axi_write(32'h0000_0014, {16'd32, 16'd32}); // H=32, W=32
-        // axi_write(32'h0000_001C, {16'd16, 16'd104});// Quant: Shift=16, Mult=104
-        // axi_write(32'h0000_0020, {16'd16, 6'd9, 6'd34, 1'd0, 3'd1}); // Datapath: w_num=9, lb_w=34, ic_g=1
+        // 4. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] SECOND ROUND: Firing NPU START Pulse!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0001);
+
+        // 5. CPU 轮询死等 NPU 完工 (Polling)
+        begin
+            reg [31:0] status;
+            status = 0;
+            while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
+                #100; // 等一会再查，别把总线占满了
+                axi_read(32'h0000_0000, status);
+            end
+        end
+        $display("[%0t] [CPU] SECOND ROUND: NPU DONE Interrupt Received!", $time);
+
+        // 2.3 清除枪：清除 NPU Done 信号
+        $display("[%0t] [CPU] THIRD ROUND: Clean NPU Done Signal!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0004);
+        // 3. CPU 配置 NPU 寄存器
+        $display("[%0t] [CPU] THIRD ROUND: Configuring NPU Registers...", $time);
+        axi_write(32'h0000_000C, 32'h0000_0020); // Bias Base
+        axi_write(32'h0000_0008, 32'h0000_1480); // Weight Base
+        // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
+        axi_write(32'h0000_0010, 32'h0002_0008); // Out Base
         
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] FIRST ROUND: Firing NPU START Pulse!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0001);
+        // 4. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] THIRD ROUND: Firing NPU START Pulse!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0001);
 
-        // // 4. CPU 轮询死等 NPU 完工 (Polling)
-        // begin
-        //     reg [31:0] status;
-        //     status = 0;
-        //     while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
-        //         #100; // 等一会再查，别把总线占满了
-        //         axi_read(32'h0000_0000, status);
-        //     end
-        // end
-        // $display("[%0t] [CPU] FIRST ROUND: NPU DONE Interrupt Received!", $time);
+        // 5. CPU 轮询死等 NPU 完工 (Polling)
+        begin
+            reg [31:0] status;
+            status = 0;
+            while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
+                #100; // 等一会再查，别把总线占满了
+                axi_read(32'h0000_0000, status);
+            end
+        end
+        $display("[%0t] [CPU] THIRD ROUND: NPU DONE Interrupt Received!", $time);
 
-        // // 2.2 CPU 配置 NPU 寄存器
-        // // 清除枪：清除 NPU Done 信号
-        // $display("[%0t] [CPU] SECOND ROUND: Clean NPU Done Signal!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0004);
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] SECOND ROUND: Configuring NPU Registers...", $time);
-        // axi_write(32'h0000_000C, 32'h0000_0010); // Bias Base
-        // axi_write(32'h0000_0008, 32'h0000_1090); // Weight Base
-        // // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
-        // axi_write(32'h0000_0010, 32'h0002_0004); // Out Base
+        // 2.4 清除枪：清除 NPU Done 信号
+        $display("[%0t] [CPU] FORTH ROUND: Clean NPU Done Signal!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0004);
+        // 3.  CPU 配置 NPU 寄存器
+        $display("[%0t] [CPU] FORTH ROUND: Configuring NPU Registers...", $time);
+        axi_write(32'h0000_000C, 32'h0000_0030); // Bias Base
+        axi_write(32'h0000_0008, 32'h0000_16C0); // Weight Base
+        // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
+        axi_write(32'h0000_0010, 32'h0002_000C); // Out Base
         
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] SECOND ROUND: Firing NPU START Pulse!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0001);
+        // 4. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] FORTH ROUND: Firing NPU START Pulse!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0001);
 
-        // // 4. CPU 轮询死等 NPU 完工 (Polling)
-        // begin
-        //     reg [31:0] status;
-        //     status = 0;
-        //     while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
-        //         #100; // 等一会再查，别把总线占满了
-        //         axi_read(32'h0000_0000, status);
-        //     end
-        // end
-        // $display("[%0t] [CPU] SECOND ROUND: NPU DONE Interrupt Received!", $time);
 
-        // // 2.3 CPU 配置 NPU 寄存器
-        // // 清除枪：清除 NPU Done 信号
-        // $display("[%0t] [CPU] THIRD ROUND: Clean NPU Done Signal!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0004);
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] THIRD ROUND: Configuring NPU Registers...", $time);
-        // axi_write(32'h0000_000C, 32'h0000_0020); // Bias Base
-        // axi_write(32'h0000_0008, 32'h0000_1120); // Weight Base
-        // // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
-        // axi_write(32'h0000_0010, 32'h0002_0008); // Out Base
+        // 5. CPU 轮询死等 NPU 完工 (Polling)
+        begin
+            reg [31:0] status;
+            status = 0;
+            while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
+                #100; // 等一会再查，别把总线占满了
+                axi_read(32'h0000_0000, status);
+            end
+        end
+        $display("[%0t] [CPU] FORTH ROUND: NPU DONE Interrupt Received!", $time);
+
+        // 2.5 清除枪：清除 NPU Done 信号
+        $display("[%0t] [CPU] FIFTH ROUND: Clean NPU Done Signal!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0004);
+        // 3.  CPU 配置 NPU 寄存器
+        $display("[%0t] [CPU] FIFTH ROUND: Configuring NPU Registers...", $time);
+        axi_write(32'h0000_000C, 32'h0000_0040); // Bias Base
+        axi_write(32'h0000_0008, 32'h0000_1900); // Weight Base
+        // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
+        axi_write(32'h0000_0010, 32'h0002_0010); // Out Base
         
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] THIRD ROUND: Firing NPU START Pulse!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0001);
+        // 4. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] FIFTH ROUND: Firing NPU START Pulse!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0001);
 
-        // // 4. CPU 轮询死等 NPU 完工 (Polling)
-        // begin
-        //     reg [31:0] status;
-        //     status = 0;
-        //     while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
-        //         #100; // 等一会再查，别把总线占满了
-        //         axi_read(32'h0000_0000, status);
-        //     end
-        // end
-        // $display("[%0t] [CPU] THIRD ROUND: NPU DONE Interrupt Received!", $time);
+        // 5. CPU 轮询死等 NPU 完工 (Polling)
+        begin
+            reg [31:0] status;
+            status = 0;
+            while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
+                #100; // 等一会再查，别把总线占满了
+                axi_read(32'h0000_0000, status);
+            end
+        end
+        $display("[%0t] [CPU] FIFTH ROUND: NPU DONE Interrupt Received!", $time);
 
-        // // 2.4 CPU 配置 NPU 寄存器
-        // // 清除枪：清除 NPU Done 信号
-        // $display("[%0t] [CPU] FORTH ROUND: Clean NPU Done Signal!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0004);
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] FORTH ROUND: Configuring NPU Registers...", $time);
-        // axi_write(32'h0000_000C, 32'h0000_0030); // Bias Base
-        // axi_write(32'h0000_0008, 32'h0000_11B0); // Weight Base
-        // // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
-        // axi_write(32'h0000_0010, 32'h0002_000C); // Out Base
+        // 2.6 清除枪：清除 NPU Done 信号
+        $display("[%0t] [CPU] 6th ROUND: Clean NPU Done Signal!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0004);
+        // 3. CPU 配置 NPU 寄存器
+        $display("[%0t] [CPU] 6th ROUND: Configuring NPU Registers...", $time);
+        axi_write(32'h0000_000C, 32'h0000_0050); // Bias Base
+        axi_write(32'h0000_0008, 32'h0000_1B40); // Weight Base
+        // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
+        axi_write(32'h0000_0010, 32'h0002_0014); // Out Base
         
-        // // 3. 发令枪：启动 NPU！
-        // $display("[%0t] [CPU] FORTH ROUND: Firing NPU START Pulse!", $time);
-        // axi_write(32'h0000_0000, 32'h0000_0001);
+        // 4. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] 6th ROUND: Firing NPU START Pulse!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0001);
 
-        // // 4. CPU 轮询死等 NPU 完工 (Polling)
-        // begin
-        //     reg [31:0] status;
-        //     status = 0;
-        //     while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
-        //         #100; // 等一会再查，别把总线占满了
-        //         axi_read(32'h0000_0000, status);
-        //     end
-        // end
-        // $display("[%0t] [CPU] FORTH ROUND: NPU DONE Interrupt Received!", $time);
+        // 5. CPU 轮询死等 NPU 完工 (Polling)
+        begin
+            reg [31:0] status;
+            status = 0;
+            while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
+                #100; // 等一会再查，别把总线占满了
+                axi_read(32'h0000_0000, status);
+            end
+        end
+        $display("[%0t] [CPU] 6th ROUND: NPU DONE Interrupt Received!", $time);
+
+        // 2.7 清除枪：清除 NPU Done 信号
+        $display("[%0t] [CPU] 7th ROUND: Clean NPU Done Signal!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0004);
+        // 3. CPU 配置 NPU 寄存器
+        $display("[%0t] [CPU] 7th ROUND: Configuring NPU Registers...", $time);
+        axi_write(32'h0000_000C, 32'h0000_0060); // Bias Base
+        axi_write(32'h0000_0008, 32'h0000_1D80); // Weight Base
+        // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
+        axi_write(32'h0000_0010, 32'h0002_0018); // Out Base
+        
+        // 4. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] 7th ROUND: Firing NPU START Pulse!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0001);
+
+        // 5. CPU 轮询死等 NPU 完工 (Polling)
+        begin
+            reg [31:0] status;
+            status = 0;
+            while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
+                #100; // 等一会再查，别把总线占满了
+                axi_read(32'h0000_0000, status);
+            end
+        end
+        $display("[%0t] [CPU] 7th ROUND: NPU DONE Interrupt Received!", $time);
+
+        // 2.8 清除枪：清除 NPU Done 信号
+        $display("[%0t] [CPU] 8th ROUND: Clean NPU Done Signal!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0004);
+        // 3. CPU 配置 NPU 寄存器
+        $display("[%0t] [CPU] 8th ROUND: Configuring NPU Registers...", $time);
+        axi_write(32'h0000_000C, 32'h0000_0070); // Bias Base
+        axi_write(32'h0000_0008, 32'h0000_1FC0); // Weight Base
+        // axi_write(32'h0000_0004, 32'h0001_0000); // Act Base
+        axi_write(32'h0000_0010, 32'h0002_001C); // Out Base
+        
+        // 4. 发令枪：启动 NPU！
+        $display("[%0t] [CPU] 8th ROUND: Firing NPU START Pulse!", $time);
+        axi_write(32'h0000_0000, 32'h0000_0001);
+
+        // 5. CPU 轮询死等 NPU 完工 (Polling)
+        begin
+            reg [31:0] status;
+            status = 0;
+            while ((status & 32'h0000_0004) == 0) begin // 检查 Bit 2 (DONE)
+                #100; // 等一会再查，别把总线占满了
+                axi_read(32'h0000_0000, status);
+            end
+        end
+        $display("[%0t] [CPU] 8th ROUND: NPU DONE Interrupt Received!", $time);
 
         // 5. 到 SRAM 结果区 0x0002_0000 收割成果！
         $display("=========================================================");
@@ -343,13 +337,13 @@ module tb_npu_system;
         $display("=========================================================");
 
         // -----------------------------------------------------------
-        // 自动化导出 1024 个结果到 txt 文件，用于 C Golden Model 比对
+        // 自动化导出 2048 个结果到 txt 文件，用于 C Golden Model 比对
         // -----------------------------------------------------------
-        $display("💾 Dumping 256 words to verilog_result.txt for verification...");
+        $display("💾 Dumping 2048 words to verilog_result.txt for verification...");
         fd = $fopen("verilog_result.txt", "w");
         
         if (fd) begin
-            for (i = 0; i < 256; i = i + 1) begin
+            for (i = 0; i < 2048; i = i + 1) begin
                 // 使用 %08X 输出 8 位大写十六进制，与 C 语言严丝合缝对齐
                 // 地址累加逻辑：起始 Word 索引 ('h20000 >> 2) 加上偏移量 i
                 $fdisplay(fd, "%08X", u_axi_sram.ram[('h20000 >> 2) + i]);
