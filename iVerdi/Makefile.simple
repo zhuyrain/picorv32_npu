@@ -20,7 +20,7 @@ SRC_FILES_1 = $(SRC_ROOT)/picorv32.v \
               $(SRC_ROOT_NPU)/axi_sram.v \
               $(SRC_ROOT_NPU)/tb_picorv32.v
 
-# [配置 2] 裸核 NPU 子系统独立仿真 (上一步我们刚刚写的)
+# [配置 2] 裸核 NPU 子系统独立仿真
 SRC_FILES_2 = $(SRC_ROOT_NPU)/pe.v \
               $(SRC_ROOT_NPU)/act_skew_buffer.v \
               $(SRC_ROOT_NPU)/sa_4_4.v \
@@ -30,12 +30,24 @@ SRC_FILES_2 = $(SRC_ROOT_NPU)/pe.v \
 			  $(SRC_ROOT_NPU)/npu_line_buffer.v \
               $(SRC_ROOT_NPU)/tb_npu_core.v
 
+# [配置 2] NPU & 虚拟CPU 系统级仿真
+SRC_FILES_3 = $(SRC_ROOT_NPU)/pe.v \
+              $(SRC_ROOT_NPU)/act_skew_buffer.v \
+              $(SRC_ROOT_NPU)/sa_4_4.v \
+			  $(SRC_ROOT_NPU)/npu_bottom_acc.v \
+			  $(SRC_ROOT_NPU)/npu_ppu.v \
+			  $(SRC_ROOT_NPU)/npu_deskew_buffer.v \
+			  $(SRC_ROOT_NPU)/npu_line_buffer.v \
+              $(SRC_ROOT_NPU)/npu_axi_wrapper_lite.v \
+			  $(SRC_ROOT_NPU)/axi_sram.v \
+			  $(SRC_ROOT_NPU)/tb_npu_system.v
+
 # 动态组装：根据 CASE 的值，把 SRC_FILES_1 或 SRC_FILES_2 赋值给 SRC_FILES
 SRC_FILES = $(SRC_FILES_$(CASE))
 
 # 防呆设计：如果选了不存在的 CASE (比如 make CASE=3)，直接报错终止
 ifeq ($(strip $(SRC_FILES)),)
-$(error "错误: 未知的仿真用例 CASE=$(CASE)！请指定 CASE=1 或 CASE=2")
+$(error "错误: 未知的仿真用例 CASE=$(CASE)！请指定 CASE=1 或 CASE=2 或 CASE=3")
 endif
 
 # ==========================================
@@ -49,9 +61,13 @@ WAVE_FILE_FSDB = $(WAVE_FILE_FSDB_$(CASE))
 WAVE_FILE_1 = picorv32_soc.vcd
 WAVE_FILE_FSDB_1 = picorv32_soc.fsdb
 
-# [配置 2] 裸核 NPU 子系统独立仿真 (上一步我们刚刚写的)
+# [配置 2] 裸核 NPU 子系统独立仿真
 WAVE_FILE_2 = tb_npu_core.vcd
 WAVE_FILE_FSDB_2 = tb_npu_core.fsdb
+
+# [配置 3] 裸核 NPU 子系统独立仿真
+WAVE_FILE_3 = tb_npu_system.vcd
+WAVE_FILE_FSDB_3 = tb_npu_system.fsdb
 
 # 默认目标：编译 -> 运行 -> 转化波形文件
 all: compile run conv
