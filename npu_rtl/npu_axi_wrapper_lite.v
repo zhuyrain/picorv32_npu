@@ -324,7 +324,7 @@ module npu_axi_wrapper_lite (
         .cfg_multiplier ({16'b0,reg_cfg_quant[15:0]}),
         .cfg_shift      (reg_cfg_quant[20:16]),
         .cfg_out_zp     (32'd0),
-        .cfg_relu_en    (1'b0), // V1.0 暂不开启
+        .cfg_relu_en    (1'b1), // V1.0 暂不开启
         .valid_in       (ppu_valid_trigger),
         .acc_in         (final_acc_out),
         .valid_out      (ppu_valid_out),

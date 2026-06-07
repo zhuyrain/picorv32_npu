@@ -100,32 +100,61 @@ module tb_picorv32;
     );
 
     // =========================================================================
-    // 4. 精确的 UART 嗅探器 (监听 CPU M0 总线)
+    // 4. 绝对抗乱序与抗 GCC 优化的终极 UART 嗅探器 (Bullet-proof UART Snooper)
     // =========================================================================
     reg [31:0] snoop_awaddr;
-    reg        snoop_awvalid_pending;
+    reg [31:0] snoop_wdata;       // 【修改】扩展为32位，接住全部数据
+    reg [3:0]  snoop_wstrb;       // 【新增】捕获字节选通信号
+    reg        snoop_aw_latched;
+    reg        snoop_w_latched;
+
+    wire [31:0] final_addr;
+    wire [31:0] final_wdata;
+    wire [3:0]  final_wstrb;
+
+    // 连续赋值：完美对齐时钟边沿
+    assign final_addr  = snoop_aw_latched ? snoop_awaddr : cpu_awaddr;
+    assign final_wdata = snoop_w_latched  ? snoop_wdata  : cpu_wdata;
+    assign final_wstrb = snoop_w_latched  ? snoop_wstrb  : cpu_wstrb;
 
     always @(posedge clk) begin
         if (!resetn) begin
-            snoop_awvalid_pending <= 0;
-            snoop_awaddr <= 0;
+            snoop_aw_latched <= 0;
+            snoop_w_latched  <= 0;
         end else begin
+            // 1. 独立捕捉 AW
             if (cpu_awvalid && cpu_awready) begin
-                snoop_awaddr <= cpu_awaddr;
-                snoop_awvalid_pending <= 1;
+                snoop_awaddr     <= cpu_awaddr;
+                snoop_aw_latched <= 1'b1;
             end
+            
+            // 2. 独立捕捉 W (连同 wstrb 一起抓！)
             if (cpu_wvalid && cpu_wready) begin
-                snoop_awvalid_pending <= 0;
+                snoop_wdata     <= cpu_wdata;
+                snoop_wstrb     <= cpu_wstrb;   // 记录到底哪些字节是有效的
+                snoop_w_latched <= 1'b1;
             end
-        end
-    end
 
-    always @(posedge clk) begin
-        if (cpu_wvalid && cpu_wready) begin
-            if ((cpu_awvalid && cpu_awready && cpu_awaddr == 32'h000E0000) ||
-                (!cpu_awvalid && snoop_awvalid_pending && snoop_awaddr == 32'h000E0000)) begin
-                $write("%c", cpu_wdata[7:0]);
-                $fflush();
+            // 3. 完美会师！
+            if ((snoop_aw_latched || (cpu_awvalid && cpu_awready)) &&
+                (snoop_w_latched  || (cpu_wvalid  && cpu_wready))) begin
+
+                // 【核心魔法】屏蔽地址低两位！
+                // 只要地址落在 0x000E0000 ~ 0x000E0003 区间内，统统拦截
+                if ((final_addr & 32'hFFFFFFFC) == 32'h001FFFF0) begin
+                    
+                    // 依据 wstrb，小端序依次打印，把被编译器合并的字符全抠出来
+                    if (final_wstrb[0]) $write("%c", final_wdata[7:0]);
+                    if (final_wstrb[1]) $write("%c", final_wdata[15:8]);
+                    if (final_wstrb[2]) $write("%c", final_wdata[23:16]);
+                    if (final_wstrb[3]) $write("%c", final_wdata[31:24]);
+                    
+                    $fflush();
+                end
+                
+                // 打印完毕，清除标志位，准备抓取下一次事务
+                snoop_aw_latched <= 1'b0;
+                snoop_w_latched  <= 1'b0;
             end
         end
     end
@@ -140,8 +169,8 @@ module tb_picorv32;
         .ADDR_WIDTH(32),
         // M1(NPU_CFG): 0x4000_0000, M0(SRAM): 0x0000_0000
         .M_BASE_ADDR({32'h4000_0000, 32'h0000_0000}), 
-        // M1(NPU_CFG): 4KB(12位), M0(SRAM): 4MB(22位)
-        .M_ADDR_WIDTH({32'd12, 32'd22})
+        // M1(NPU_CFG): 4KB(12位), M0(SRAM): 2MB(21位)
+        .M_ADDR_WIDTH({32'd12, 32'd21})
     ) u_interconnect (
         .clk(clk),
         .rst(~resetn), // 取反复位
