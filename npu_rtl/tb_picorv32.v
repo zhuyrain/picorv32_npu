@@ -14,9 +14,6 @@ module tb_picorv32;
         forever #5 clk = ~clk; 
     end
     // FPGA 魔法：在综合/仿真时将 hex 文件烙印进 BRAM
-    // --- 1. 注入 Bias (存放到 0x0000_0000 开始) ---
-    // --- 2. 注入 Weights (存放到 0x0000_1000 开始，词索引 0x400) ---
-    // --- 3. 注入 Image Activations (存放到 0x0001_0000 开始，词索引 0x4000) ---
     initial begin
         $readmemh("firmware.hex", main_memory.ram);
         $display("[%0t] [Backdoor] SRAM Memory initialized with Real Data!", $time);
