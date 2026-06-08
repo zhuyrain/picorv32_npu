@@ -385,6 +385,7 @@ module npu_axi_wrapper_lite (
     reg [5:0]  weight_cycle_cnt; // 记录配了第几组权重
     reg [15:0] pixel_cnt;
     reg [2:0]  ig_cnt; // 记录当前读取到了该像素的第几个通道组
+    reg [15:0] drain_cnt;        // fifo延迟计数器
 
     reg        ar_done, aw_done, w_done;
     reg        first_row_loaded;
@@ -427,7 +428,6 @@ always @(posedge clk or negedge rst_n) begin
                         act_ptr    <= reg_act_base;
                         weight_ptr <= reg_weight_base;
                         bias_ptr   <= reg_bias_base;
-                        out_ptr    <= reg_out_base;
                         ox <= 0; oy <= 0;
                         pack_cnt <= 0; weight_cycle_cnt <= 0;
                         state <= S_LOAD_BIAS;
@@ -605,6 +605,8 @@ always @(posedge clk or negedge rst_n) begin
                             // 全图的前端送入已经结束！
                             // 但是！阵列肚子里还有数据没流完，FIFO 里还有数据没写完！
                             // 所以进入收尾等待态
+                            // 【核心修复】：为排空态准备计数器！
+                            drain_cnt <= 0;
                             state <= S_WAIT_ALL_DONE; 
                         end else if (oy == cfg_img_h - 2) begin
                             // 完美 Bottom Pad!
@@ -647,8 +649,13 @@ always @(posedge clk or negedge rst_n) begin
                 end
 
                 S_WAIT_ALL_DONE: begin
-                    // 收尾！只有当前端送完、阵列排空、且独立写状态机把 FIFO 全写回 SRAM 时，才算真正 Done！
-                    if (fifo_empty && write_fsm_idle) begin
+                    // 阵列深度 + PPU + Deskew 总共约需 10 拍
+                    // 保险起见，我们强制等 20 拍，确保子弹全都飞进 FIFO
+                    if (drain_cnt < 20) begin
+                        drain_cnt <= drain_cnt + 1;
+                    end
+                    // 只有子弹都进 FIFO 了，再去监控 FIFO 的写回情况
+                    else if (fifo_empty && write_fsm_idle) begin
                         npu_done_pulse <= 1'b1; 
                         state <= S_IDLE;
                     end
@@ -665,45 +672,51 @@ always @(posedge clk or negedge rst_n) begin
     // 提供给主状态机的标志位
     wire write_fsm_idle = (wr_state == 0);
 
-    always @(posedge clk or negedge rst_n) begin
+always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             wr_state <= 0;
-            // out_ptr <= 0; 这个由主 FSM 的 S_IDLE 赋初值，后续归这里管
+            out_ptr  <= 0; 
         end else begin
-            case (wr_state)
-                0: begin // IDLE
-                    if (!fifo_empty) begin
-                        m_axi_awvalid <= 1'b1;
-                        m_axi_awaddr  <= out_ptr;
-                        wr_state      <= 1; // 去握手地址
+            // 【神级解耦】：利用发令枪同步初始化！
+            if (npu_start_pulse) begin
+                out_ptr  <= reg_out_base; // CPU 发车时，写状态机自行认领首地址
+                wr_state <= 0;
+            end else begin
+                case (wr_state)
+                    0: begin // IDLE
+                        if (!fifo_empty) begin
+                            m_axi_awvalid <= 1'b1;
+                            m_axi_awaddr  <= out_ptr;
+                            wr_state      <= 1; // 去握手地址
+                        end
                     end
-                end
-                1: begin // AW
-                    if (m_axi_awvalid && m_axi_awready) begin
-                        m_axi_awvalid <= 1'b0;
-                        m_axi_wvalid  <= 1'b1;
-                        m_axi_wstrb   <= 4'b1111;
-                        m_axi_wdata   <= fifo_rd_data; // FIFO 吐出的数据
-                        // 注意：这里需要同时给 FIFO 发送一个 rd_en 脉冲，让它弹出一个数据！
-                        //  FIFO 的 rd_en 脉冲 就是 m_axi_wvalid && m_axi_wready
-                        wr_state      <= 2;
+                    1: begin // AW
+                        if (m_axi_awvalid && m_axi_awready) begin
+                            m_axi_awvalid <= 1'b0;
+                            m_axi_wvalid  <= 1'b1;
+                            m_axi_wstrb   <= 4'b1111;
+                            m_axi_wdata   <= fifo_rd_data; // FIFO 吐出的数据
+                            // 注意：这里需要同时给 FIFO 发送一个 rd_en 脉冲，让它弹出一个数据！
+                            //  FIFO 的 rd_en 脉冲 就是 m_axi_wvalid && m_axi_wready
+                            wr_state      <= 2;
+                        end
                     end
-                end
-                2: begin // W
-                    if (m_axi_wvalid && m_axi_wready) begin
-                        m_axi_wvalid <= 1'b0;
-                        m_axi_bready <= 1'b1;
-                        wr_state     <= 3;
+                    2: begin // W
+                        if (m_axi_wvalid && m_axi_wready) begin
+                            m_axi_wvalid <= 1'b0;
+                            m_axi_bready <= 1'b1;
+                            wr_state     <= 3;
+                        end
                     end
-                end
-                3: begin // B
-                    if (m_axi_bvalid && m_axi_bready) begin
-                        m_axi_bready <= 1'b0;
-                        out_ptr      <= out_ptr + out_stride; // 核心跳跃！
-                        wr_state     <= 0; // 回去搬下一个！
+                    3: begin // B
+                        if (m_axi_bvalid && m_axi_bready) begin
+                            m_axi_bready <= 1'b0;
+                            out_ptr      <= out_ptr + out_stride; // 核心跳跃！
+                            wr_state     <= 0; // 回去搬下一个！
+                        end
                     end
-                end
-            endcase
+                endcase
+            end
         end
     end
 endmodule
