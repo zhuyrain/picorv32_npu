@@ -377,7 +377,7 @@ module npu_axi_wrapper_lite (
     localparam S_WAIT_ALL_DONE   = 4'd8;
     
 
-    reg [2:0] state;
+    reg [3:0] state;
     reg [15:0] ox, oy;
     reg [31:0] act_ptr, weight_ptr, bias_ptr, out_ptr;
     
@@ -395,11 +395,6 @@ always @(posedge clk or negedge rst_n) begin
             state <= S_IDLE;
             npu_busy <= 0; 
             npu_done_pulse <= 0;
-            m_axi_arvalid <= 0; 
-            m_axi_rready <= 0;
-            m_axi_awvalid <= 0; 
-            m_axi_wvalid <= 0; 
-            m_axi_bready <= 0;
             ar_done <= 0; aw_done <= 0; w_done <= 0;
             act_valid_in <= 0; 
             sa_weight_en <= 0;
@@ -651,6 +646,8 @@ always @(posedge clk or negedge rst_n) begin
                 S_WAIT_ALL_DONE: begin
                     // 阵列深度 + PPU + Deskew 总共约需 10 拍
                     // 保险起见，我们强制等 20 拍，确保子弹全都飞进 FIFO
+                    // 一次端到端计算只会触发一次，代价完全可以接受
+                    // 保证计算的结果都流入FIFO
                     if (drain_cnt < 20) begin
                         drain_cnt <= drain_cnt + 1;
                     end
@@ -676,6 +673,13 @@ always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             wr_state <= 0;
             out_ptr  <= 0; 
+            // 【终极修复】：写通道信号的绝对控制权归这里！
+            m_axi_awaddr  <= 0;
+            m_axi_awvalid <= 0;
+            m_axi_wvalid  <= 0;
+            m_axi_bready  <= 0;
+            m_axi_wstrb   <= 0;
+            m_axi_wdata   <= 0;
         end else begin
             // 【神级解耦】：利用发令枪同步初始化！
             if (npu_start_pulse) begin
