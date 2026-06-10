@@ -17,7 +17,19 @@ CASE ?= 1
 
 # [配置 1] PicoRV32 SoC 完整仿真 (默认)
 SRC_FILES_1 = $(SRC_ROOT)/picorv32.v \
-              $(SRC_ROOT_NPU)/axi_sram.v \
+ 			  $(SRC_ROOT_NPU)/pe.v \
+              $(SRC_ROOT_NPU)/act_skew_buffer.v \
+              $(SRC_ROOT_NPU)/sa_4_4.v \
+			  $(SRC_ROOT_NPU)/npu_bottom_acc.v \
+			  $(SRC_ROOT_NPU)/npu_ppu.v \
+			  $(SRC_ROOT_NPU)/npu_deskew_buffer.v \
+			  $(SRC_ROOT_NPU)/npu_sync_fifo.v \
+			  $(SRC_ROOT_NPU)/npu_line_buffer.v \
+              $(SRC_ROOT_NPU)/npu_axi_wrapper_lite.v \
+			  $(SRC_ROOT_NPU)/axi_sram.v \
+			  $(SRC_ROOT_NPU)/axil_interconnect.v \
+			  $(SRC_ROOT_NPU)/arbiter.v \
+			  $(SRC_ROOT_NPU)/priority_encoder.v \
               $(SRC_ROOT_NPU)/tb_picorv32.v
 
 # [配置 2] 裸核 NPU 子系统独立仿真
@@ -30,7 +42,7 @@ SRC_FILES_2 = $(SRC_ROOT_NPU)/pe.v \
 			  $(SRC_ROOT_NPU)/npu_line_buffer.v \
               $(SRC_ROOT_NPU)/tb_npu_core.v
 
-# [配置 2] NPU & 虚拟CPU 系统级仿真
+# [配置 3] NPU & 虚拟CPU 系统级仿真
 SRC_FILES_3 = $(SRC_ROOT_NPU)/pe.v \
               $(SRC_ROOT_NPU)/act_skew_buffer.v \
               $(SRC_ROOT_NPU)/sa_4_4.v \
@@ -40,6 +52,9 @@ SRC_FILES_3 = $(SRC_ROOT_NPU)/pe.v \
 			  $(SRC_ROOT_NPU)/npu_line_buffer.v \
               $(SRC_ROOT_NPU)/npu_axi_wrapper_lite.v \
 			  $(SRC_ROOT_NPU)/axi_sram.v \
+			  $(SRC_ROOT_NPU)/axil_interconnect.v \
+			  $(SRC_ROOT_NPU)/arbiter.v \
+			  $(SRC_ROOT_NPU)/priority_encoder.v \
 			  $(SRC_ROOT_NPU)/tb_npu_system.v
 
 # 动态组装：根据 CASE 的值，把 SRC_FILES_1 或 SRC_FILES_2 赋值给 SRC_FILES

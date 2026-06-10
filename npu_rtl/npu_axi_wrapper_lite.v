@@ -324,7 +324,7 @@ module npu_axi_wrapper_lite (
         .cfg_multiplier ({16'b0,reg_cfg_quant[15:0]}),
         .cfg_shift      (reg_cfg_quant[20:16]),
         .cfg_out_zp     (32'd0),
-        .cfg_relu_en    (1'b0), // V1.0 暂不开启
+        .cfg_relu_en    (1'b1), // V1.0 暂不开启
         .valid_in       (ppu_valid_trigger),
         .acc_in         (final_acc_out),
         .valid_out      (ppu_valid_out),
@@ -343,20 +343,41 @@ module npu_axi_wrapper_lite (
         .deskewed_valid_out (deskewed_valid_out)
     );
 
+    wire        fifo_empty;
+    wire        fifo_full;
+    wire        fifo_almost_full;
+    wire [31:0] fifo_rd_data;
+
+    npu_sync_fifo #(
+        .DATA_WIDTH(32), .ADDR_WIDTH(4), .ALMOST_FULL_THRESH(12)
+    ) u_out_fifo (
+        .clk        (clk),
+        .rst_n      (rst_n),
+        .wr_en      (deskewed_valid_out), // Deskew 吐出数据即写入
+        .wr_data    (deskewed_data_out),
+        .rd_en      (m_axi_wready && m_axi_wvalid), // AXI 写握手成功即读出
+        .rd_data    (fifo_rd_data),
+        .empty      (fifo_empty),
+        .full       (fifo_full),
+        .almost_full(fifo_almost_full)
+    );
+
     // =========================================================
     // [模块 3]: AXI-Lite Master 主状态机 (DMA 控制流)
     // =========================================================
-    localparam S_IDLE        = 3'd0;
-    localparam S_LOAD_BIAS   = 3'd1;
-    localparam S_LOAD_WEIGHT = 3'd2;
-    localparam S_LOAD_ROW    = 3'd3;
-    localparam S_SHIFT_LINE_INIT = 3'd4; // 【新增】
-    localparam S_COMPUTE     = 3'd5;
-    localparam S_WAIT_DESKEW = 3'd6;
-    localparam S_WRITE_BACK  = 3'd7;
+    localparam S_IDLE            = 4'd0;
+    localparam S_LOAD_BIAS       = 4'd1;
+    localparam S_LOAD_WEIGHT     = 4'd2;
+    localparam S_LOAD_ROW        = 4'd3;
+    localparam S_SHIFT_LINE_INIT = 4'd4;
+    
+    localparam S_WAIT_FIFO       = 4'd5; // 【新增】：滑窗发车前的检票站
+    localparam S_COMPUTE         = 4'd6;
+    localparam S_UPDATE_WINDOW   = 4'd7;
+    localparam S_WAIT_ALL_DONE   = 4'd8;
     
 
-    reg [2:0] state;
+    reg [3:0] state;
     reg [15:0] ox, oy;
     reg [31:0] act_ptr, weight_ptr, bias_ptr, out_ptr;
     
@@ -364,6 +385,7 @@ module npu_axi_wrapper_lite (
     reg [5:0]  weight_cycle_cnt; // 记录配了第几组权重
     reg [15:0] pixel_cnt;
     reg [2:0]  ig_cnt; // 记录当前读取到了该像素的第几个通道组
+    reg [15:0] drain_cnt;        // fifo延迟计数器
 
     reg        ar_done, aw_done, w_done;
     reg        first_row_loaded;
@@ -373,11 +395,6 @@ always @(posedge clk or negedge rst_n) begin
             state <= S_IDLE;
             npu_busy <= 0; 
             npu_done_pulse <= 0;
-            m_axi_arvalid <= 0; 
-            m_axi_rready <= 0;
-            m_axi_awvalid <= 0; 
-            m_axi_wvalid <= 0; 
-            m_axi_bready <= 0;
             ar_done <= 0; aw_done <= 0; w_done <= 0;
             act_valid_in <= 0; 
             sa_weight_en <= 0;
@@ -406,7 +423,6 @@ always @(posedge clk or negedge rst_n) begin
                         act_ptr    <= reg_act_base;
                         weight_ptr <= reg_weight_base;
                         bias_ptr   <= reg_bias_base;
-                        out_ptr    <= reg_out_base;
                         ox <= 0; oy <= 0;
                         pack_cnt <= 0; weight_cycle_cnt <= 0;
                         state <= S_LOAD_BIAS;
@@ -509,8 +525,12 @@ always @(posedge clk or negedge rst_n) begin
                                         lb_kernel_kx     <= 2'd0;
                                         lb_kernel_ky     <= 2'd0;
                                         lb_read_ic_group <= 3'd0;
-                                        act_valid_in <= 1'b1; 
-                                        state <= S_COMPUTE;
+                                        if (!fifo_almost_full) begin
+                                            act_valid_in <= 1'b1; 
+                                            state <= S_COMPUTE;
+                                        end else begin
+                                            state <= S_WAIT_FIFO;
+                                        end
                                     end
                                 end
                             end else begin
@@ -541,7 +561,9 @@ always @(posedge clk or negedge rst_n) begin
                                 lb_read_ic_group <= 3'd0;
                                 // 【核心修复 2】：为下一拍提前撤销令牌！
                                 act_valid_in <= 1'b0; 
-                                state <= S_WAIT_DESKEW;
+                                
+                                // 【神级跳转】：再也不等了！直接去更新坐标！
+                                state <= S_UPDATE_WINDOW;
                             end else begin
                                 lb_read_ic_group <= lb_read_ic_group + 3'd1;
                             end
@@ -553,72 +575,152 @@ always @(posedge clk or negedge rst_n) begin
                     end
                 end
 
-                S_WAIT_DESKEW: begin
-                    act_valid_in <= 1'b0; // 停止产生令牌
-                    if (deskewed_valid_out) begin // 完美对齐的输出诞生！
-                        m_axi_wdata <= deskewed_data_out; 
-                        state <= S_WRITE_BACK;
+                // ==========================================
+                // 【发车等待区】：只有在被 Fast-Path 拦截时才进来休息
+                // ==========================================
+                S_WAIT_FIFO: begin
+                    lb_pixel_wr_en <= 0;      // 停止写像素
+                    lb_shift_line_en <= 1'b0; // 确保滚动只发生一拍
+                    
+                    if (!fifo_almost_full) begin
+                        act_valid_in <= 1'b1; // 绿灯！打出发令令牌！
+                        state <= S_COMPUTE;
+                    end else begin
+                        act_valid_in <= 1'b0; // 红灯！继续挂机
                     end
                 end
 
-                S_WRITE_BACK: begin
-                    if (!aw_done) begin
-                        m_axi_awvalid <= 1; m_axi_awaddr <= out_ptr;
-                        if (m_axi_awvalid && m_axi_awready) begin
-                            m_axi_awvalid <= 0; aw_done <= 1;
-                        end
-                    end
-                    if (!w_done) begin
-                        m_axi_wvalid <= 1; m_axi_wstrb <= 4'b1111;
-                        if (m_axi_wvalid && m_axi_wready) begin
-                            m_axi_wvalid <= 0; w_done <= 1;
-                        end
-                    end
-                    
-                    if (aw_done && w_done) begin
-                        m_axi_bready <= 1;
-                        if (m_axi_bvalid && m_axi_bready) begin
-                            m_axi_bready <= 0; aw_done <= 0; w_done <= 0;
-                            out_ptr <= out_ptr + out_stride;
-                            
-                            // ----- 滑窗逻辑 -----
-                            if (ox == cfg_img_w - 1) begin
-                                ox <= 0; oy <= oy + 1;
-                                if (oy == cfg_img_h - 1) begin
-                                    npu_done_pulse <= 1; // 算完啦！
-                                    state <= S_IDLE;
-                                end else if (oy == cfg_img_h - 2) begin
-                                    // 完美 Bottom Pad!
-                                    lb_shift_line_en <= 1'b1; 
-                                    lb_window_base_x <= 6'd0;
-                                    
-                                    // 初始化下一轮的 3D 嵌套坐标！& 提前配置权重有效信号
-                                    lb_kernel_kx     <= 2'd0;
-                                    lb_kernel_ky     <= 2'd0;
-                                    lb_read_ic_group <= 3'd0;
-                                    act_valid_in <= 1'b1;
-                                    state <= S_COMPUTE;
-                                end else begin
-                                    lb_shift_line_en <= 1'b1; 
-                                    pixel_cnt <= 0;
-                                    state <= S_LOAD_ROW;
-                                end
-                            end else begin
-                                ox <= ox + 1;
-                                lb_window_base_x <= ox[5:0] + 1;
-                                
-                                // 初始化下一轮的 3D 嵌套坐标！& 提前配置权重有效信号
-                                lb_kernel_kx     <= 2'd0;
-                                lb_kernel_ky     <= 2'd0;
-                                lb_read_ic_group <= 3'd0;
+                // ==========================================
+                // 滑窗更新态：包含 Fast-Path 跳跃逻辑
+                // ==========================================
+                S_UPDATE_WINDOW: begin
+                    if (ox == cfg_img_w - 1) begin
+                        ox <= 0; oy <= oy + 1;
+                        if (oy == cfg_img_h - 1) begin
+                            // 全图的前端送入已经结束！
+                            // 但是！阵列肚子里还有数据没流完，FIFO 里还有数据没写完！
+                            // 所以进入收尾等待态
+                            // 【核心修复】：为排空态准备计数器！
+                            drain_cnt <= 0;
+                            state <= S_WAIT_ALL_DONE; 
+                        end else if (oy == cfg_img_h - 2) begin
+                            // 完美 Bottom Pad!
+                            lb_shift_line_en <= 1'b1; 
+                            lb_window_base_x <= 6'd0;
+
+                            // 初始化下一轮的 3D 嵌套坐标！& 提前配置权重有效信号
+                            lb_kernel_kx     <= 2'd0;
+                            lb_kernel_ky     <= 2'd0;
+                            lb_read_ic_group <= 3'd0;                
+                            // 【Fast-Path 优化 2】
+                            if (!fifo_almost_full) begin
                                 act_valid_in <= 1'b1;
                                 state <= S_COMPUTE;
+                            end else begin
+                                state <= S_WAIT_FIFO;
                             end
+                        end else begin
+                            lb_shift_line_en <= 1'b1; 
+                            pixel_cnt <= 0;
+                            state <= S_LOAD_ROW;
                         end
+                    end else begin
+                        ox <= ox + 1;
+                        lb_window_base_x <= ox[5:0] + 1;
+
+                        // 初始化下一轮的 3D 嵌套坐标！& 提前配置权重有效信号
+                        lb_kernel_kx     <= 2'd0;
+                        lb_kernel_ky     <= 2'd0;
+                        lb_read_ic_group <= 3'd0;
+                        
+                        // 【Fast-Path 优化 3】
+                        if (!fifo_almost_full) begin
+                            act_valid_in <= 1'b1;
+                            state <= S_COMPUTE;
+                        end else begin
+                            state <= S_WAIT_FIFO;
+                        end
+                    end
+                end
+
+                S_WAIT_ALL_DONE: begin
+                    // 阵列深度 + PPU + Deskew 总共约需 10 拍
+                    // 保险起见，我们强制等 20 拍，确保子弹全都飞进 FIFO
+                    // 一次端到端计算只会触发一次，代价完全可以接受
+                    // 保证计算的结果都流入FIFO
+                    if (drain_cnt < 20) begin
+                        drain_cnt <= drain_cnt + 1;
+                    end
+                    // 只有子弹都进 FIFO 了，再去监控 FIFO 的写回情况
+                    else if (fifo_empty && write_fsm_idle) begin
+                        npu_done_pulse <= 1'b1; 
+                        state <= S_IDLE;
                     end
                 end
             endcase
         end
     end
+    // =========================================================
+    // [模块 4]: 独立运行的 AXI 写回状态机 (Backend Write FSM)
+    // =========================================================
+    reg [1:0] wr_state;
+    // 状态定义: W_IDLE(0), W_AW(1), W_W(2), W_B(3)
 
+    // 提供给主状态机的标志位
+    wire write_fsm_idle = (wr_state == 0);
+
+always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            wr_state <= 0;
+            out_ptr  <= 0; 
+            // 【终极修复】：写通道信号的绝对控制权归这里！
+            m_axi_awaddr  <= 0;
+            m_axi_awvalid <= 0;
+            m_axi_wvalid  <= 0;
+            m_axi_bready  <= 0;
+            m_axi_wstrb   <= 0;
+            m_axi_wdata   <= 0;
+        end else begin
+            // 【神级解耦】：利用发令枪同步初始化！
+            if (npu_start_pulse) begin
+                out_ptr  <= reg_out_base; // CPU 发车时，写状态机自行认领首地址
+                wr_state <= 0;
+            end else begin
+                case (wr_state)
+                    0: begin // IDLE
+                        if (!fifo_empty) begin
+                            m_axi_awvalid <= 1'b1;
+                            m_axi_awaddr  <= out_ptr;
+                            wr_state      <= 1; // 去握手地址
+                        end
+                    end
+                    1: begin // AW
+                        if (m_axi_awvalid && m_axi_awready) begin
+                            m_axi_awvalid <= 1'b0;
+                            m_axi_wvalid  <= 1'b1;
+                            m_axi_wstrb   <= 4'b1111;
+                            m_axi_wdata   <= fifo_rd_data; // FIFO 吐出的数据
+                            // 注意：这里需要同时给 FIFO 发送一个 rd_en 脉冲，让它弹出一个数据！
+                            //  FIFO 的 rd_en 脉冲 就是 m_axi_wvalid && m_axi_wready
+                            wr_state      <= 2;
+                        end
+                    end
+                    2: begin // W
+                        if (m_axi_wvalid && m_axi_wready) begin
+                            m_axi_wvalid <= 1'b0;
+                            m_axi_bready <= 1'b1;
+                            wr_state     <= 3;
+                        end
+                    end
+                    3: begin // B
+                        if (m_axi_bvalid && m_axi_bready) begin
+                            m_axi_bready <= 1'b0;
+                            out_ptr      <= out_ptr + out_stride; // 核心跳跃！
+                            wr_state     <= 0; // 回去搬下一个！
+                        end
+                    end
+                endcase
+            end
+        end
+    end
 endmodule
