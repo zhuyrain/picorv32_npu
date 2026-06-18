@@ -30,10 +30,7 @@ SRC_FILES_1 = $(SRC_ROOT)/picorv32.v \
 			  $(SRC_ROOT_NPU)/axil_interconnect.v \
 			  $(SRC_ROOT_NPU)/arbiter.v \
 			  $(SRC_ROOT_NPU)/priority_encoder.v \
-			  $(SRC_ROOT_NPU)/axi_dp_ram.v \
-			  $(SRC_ROOT_NPU)/axi_ram_wr_rd_if.v \
-			  $(SRC_ROOT_NPU)/axi_ram_rd_if.v \
-			  $(SRC_ROOT_NPU)/axi_ram_wr_if.v \
+			  $(SRC_ROOT_NPU)/axi_dp_sram_lite.v \
               $(SRC_ROOT_NPU)/tb_picorv32.v
 
 # [配置 2] 裸核 NPU 子系统独立仿真
