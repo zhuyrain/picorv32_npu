@@ -304,4 +304,64 @@ module axi_dp_sram_lite #(
         end
     end
 
+    //地址越界检查
+    `ifdef SIM_CHECKS
+    initial begin
+        $display("[SRAM CHECKING START]");
+    end
+    always @(posedge clk) begin
+        if (resetn) begin
+            if (axi_a_arvalid && axi_a_arready && ((axi_a_araddr >> 2) >= WORD_DEPTH))
+                $display("[SRAM WARNING] Port A read out of range: addr = %08x", axi_a_araddr);
+
+            if (axi_a_awvalid && axi_a_awready && ((axi_a_awaddr >> 2) >= WORD_DEPTH))
+                $display("[SRAM WARNING] Port A write out of range: addr = %08x", axi_a_awaddr);
+
+            if (axi_b_arvalid && axi_b_arready && ((axi_b_araddr >> 2) >= WORD_DEPTH))
+                $display("[SRAM WARNING] Port B read out of range: addr = %08x", axi_b_araddr);
+
+            if (axi_b_awvalid && axi_b_awready && ((axi_b_awaddr >> 2) >= WORD_DEPTH))
+                $display("[SRAM WARNING] Port B write out of range: addr = %08x", axi_b_awaddr);
+        end
+    end
+
+    //同时写同一地址检查
+    always @(posedge clk) begin
+        if (resetn) begin
+            if ((aw_latched_a || aw_fire_a) &&
+                (w_latched_a  || w_fire_a ) &&
+                !b_valid_a &&
+                (aw_latched_b || aw_fire_b) &&
+                (w_latched_b  || w_fire_b ) &&
+                !b_valid_b &&
+                ((f_addr_a >> 2) == (f_addr_b >> 2))) begin
+
+                $display("[SRAM WARNING] Port A and Port B write same word at same cycle: addr = %08x", f_addr_a);
+            end
+        end
+    end
+
+    //一读一写同一地址检查
+    always @(posedge clk) begin
+        if (resetn) begin
+            if ((axi_a_arvalid && ar_ready_a) &&
+                (aw_latched_b || aw_fire_b) &&
+                (w_latched_b  || w_fire_b ) &&
+                !b_valid_b &&
+                ((axi_a_araddr >> 2) == (f_addr_b >> 2))) begin
+
+                $display("[SRAM WARNING] Port A read while Port B writes same word: addr = %08x", axi_a_araddr);
+            end
+
+            if ((axi_b_arvalid && ar_ready_b) &&
+                (aw_latched_a || aw_fire_a) &&
+                (w_latched_a  || w_fire_a ) &&
+                !b_valid_a &&
+                ((axi_b_araddr >> 2) == (f_addr_a >> 2))) begin
+
+                $display("[SRAM WARNING] Port B read while Port A writes same word: addr = %08x", axi_b_araddr);
+            end
+        end
+    end
+    `endif
 endmodule

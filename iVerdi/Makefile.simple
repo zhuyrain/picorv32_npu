@@ -107,6 +107,12 @@ conv:
 wave:
 	@echo "--- [4/4] Opening Waveform in Verdi ---"
 	$(WAVE_TOOL) -ssf $(WAVE_FILE_FSDB) &
+
+# 5. 开启检查代码并编译
+check:
+	@echo "--- [1/4] Compiling Verilog Sources (CASE=$(CASE)) ---"
+	$(SIM_TOOL) -DSIM_CHECKS -o $(TARGET) $(SRC_FILES)
+
 # 清理编译垃圾
 clean:
 	@echo "--- Cleaning Workspace ---"
