@@ -172,76 +172,64 @@ module tb_axi_dp_sram_hybrid_burst;
             // ------------------------------
             // AW channel
             // ------------------------------
-            @(negedge clk);
-            axi_b_awaddr  = base_addr;
-            axi_b_awlen   = awlen;
-            axi_b_awsize  = 3'd2;   // 4 bytes / beat
-            axi_b_awburst = 2'b01;  // INCR
-            axi_b_awvalid = 1'b1;
+            @(posedge clk);
+            axi_b_awaddr  <= base_addr;
+            axi_b_awlen   <= awlen;
+            axi_b_awsize  <= 3'd2;   // 4 bytes / beat
+            axi_b_awburst <= 2'b01;  // INCR
+            axi_b_awvalid <= 1'b1;
 
-            aw_hs = 1'b0;
-            while (!aw_hs) begin
+            while (!(axi_b_awvalid && axi_b_awready)) begin
                 @(posedge clk);
-                aw_hs = axi_b_awvalid && axi_b_awready;
-                #1;
             end
-
-            axi_b_awvalid = 1'b0;
+            
+            axi_b_awvalid <= 1'b0;
 
             // BREADY 可以提前拉高，表示 master 随时准备接收 B 响应
-            axi_b_bready = 1'b1;
+            axi_b_bready <= 1'b1;
 
             // ------------------------------
             // W channel: 连续 burst 写，1 cycle / beat
             // ------------------------------
             beat = 0;
 
-            @(negedge clk);
-            axi_b_wdata  = gen_data(seed, beat);
-            axi_b_wstrb  = 4'b1111;
-            axi_b_wlast  = (beat == awlen);
-            axi_b_wvalid = 1'b1;
+            // @(posedge clk);
+            axi_b_wdata  <= gen_data(seed, beat);
+            axi_b_wstrb  <= 4'b1111;
+            axi_b_wlast  <= (beat == awlen);
+            axi_b_wvalid <= 1'b1;
 
             while (beat <= awlen) begin
-                @(posedge clk);
-
                 // 关键：必须在 posedge 当下采样握手，不能先 #1
-                w_hs = axi_b_wvalid && axi_b_wready;
-
-                if (w_hs) begin
+                if (axi_b_wvalid && axi_b_wready) begin
                     $display("[%0t] [CPU]   W beat %0d: data=%08x, last=%0d",
                             $time, beat, axi_b_wdata, axi_b_wlast);
 
-                    #1;
-
                     if (beat == awlen) begin
-                        axi_b_wvalid = 1'b0;
-                        axi_b_wlast  = 1'b0;
-                        axi_b_wstrb  = 4'b0000;
+                        axi_b_wvalid <= 1'b0;
+                        axi_b_wlast  <= 1'b0;
+                        axi_b_wstrb  <= 4'b0000;
                         beat = beat + 1;
                     end else begin
                         beat = beat + 1;
 
                         // 立刻准备下一拍数据，保持 WVALID=1
-                        axi_b_wdata  = gen_data(seed, beat);
-                        axi_b_wstrb  = 4'b1111;
-                        axi_b_wlast  = (beat == awlen);
-                        axi_b_wvalid = 1'b1;
+                        axi_b_wdata  <= gen_data(seed, beat);
+                        axi_b_wstrb  <= 4'b1111;
+                        axi_b_wlast  <= (beat == awlen);
+                        axi_b_wvalid <= 1'b1;
                     end
                 end else begin
                     // 没握手就保持 WDATA/WSTRB/WLAST/WVALID 不变
-                    #1;
                 end
+                @(posedge clk);
             end
 
             // ------------------------------
             // B channel
             // ------------------------------
-            b_hs = 1'b0;
-            while (!b_hs) begin
+            while (!(axi_b_bvalid && axi_b_bready)) begin
                 @(posedge clk);
-                b_hs = axi_b_bvalid && axi_b_bready;
-                #1;
             end
 
             if (axi_b_bresp !== 2'b00) begin
@@ -249,8 +237,7 @@ module tb_axi_dp_sram_hybrid_burst;
                         $time, axi_b_bresp);
                 errors = errors + 1;
             end
-
-            axi_b_bready = 1'b0;
+            axi_b_bready <= 1'b0;
 
             $display("[%0t] [CPU] AXI burst write done.", $time);
         end
@@ -275,21 +262,19 @@ module tb_axi_dp_sram_hybrid_burst;
             // ------------------------------
             // AR channel
             // ------------------------------
-            @(negedge clk);
-            axi_b_araddr  = base_addr;
-            axi_b_arlen   = arlen;
-            axi_b_arsize  = 3'd2;   // 4 bytes
-            axi_b_arburst = 2'b01;  // INCR
-            axi_b_arvalid = 1'b1;
+            @(posedge clk);
+            axi_b_araddr  <= base_addr;
+            axi_b_arlen   <= arlen;
+            axi_b_arsize  <= 3'd2;   // 4 bytes
+            axi_b_arburst <= 2'b01;  // INCR
+            axi_b_arvalid <= 1'b1;
 
             while (!(axi_b_arvalid && axi_b_arready)) begin
                 @(posedge clk);
-                #1;
             end
 
-            @(negedge clk);
-            axi_b_arvalid = 1'b0;
-            axi_b_rready  = 1'b1;
+            axi_b_arvalid <= 1'b0;
+            axi_b_rready  <= 1'b1;
 
             // ------------------------------
             // R channel
@@ -297,7 +282,6 @@ module tb_axi_dp_sram_hybrid_burst;
             for (beat = 0; beat <= arlen; beat = beat + 1) begin
                 while (!(axi_b_rvalid && axi_b_rready)) begin
                     @(posedge clk);
-                    #1;
                 end
 
                 expected = gen_data(seed, beat);
@@ -316,13 +300,9 @@ module tb_axi_dp_sram_hybrid_burst;
                              $time, beat, axi_b_rlast, (beat == arlen));
                     errors = errors + 1;
                 end
-
                 @(posedge clk);
-                #1;
             end
-
-            @(negedge clk);
-            axi_b_rready = 1'b0;
+            axi_b_rready <= 1'b0;
 
             $display("[%0t] [CPU] AXI burst read done.", $time);
         end
@@ -350,7 +330,7 @@ module tb_axi_dp_sram_hybrid_burst;
             axi_b_awaddr  = 32'b0;
             axi_b_awlen   = 8'b0;
             axi_b_awsize  = 3'd2;
-            axi_b_awburst = 2'b01;
+            axi_b_awburst = 2'b00;
 
             axi_b_wvalid  = 1'b0;
             axi_b_wdata   = 32'b0;
@@ -362,7 +342,7 @@ module tb_axi_dp_sram_hybrid_burst;
             axi_b_araddr  = 32'b0;
             axi_b_arlen   = 8'b0;
             axi_b_arsize  = 3'd2;
-            axi_b_arburst = 2'b01;
+            axi_b_arburst = 2'b00;
             axi_b_rready  = 1'b0;
         end
     endtask
