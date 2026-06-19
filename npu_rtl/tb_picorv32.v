@@ -274,15 +274,19 @@ module tb_picorv32;
     );
 
     // =========================================================================
-    // 7. 例化 我们自己手搓的 双端口 AXI-Lite SRAM (2MB)
+    // 7. 例化 我们自己手搓的 混合端口 SRAM (2MB)
+    //    Port A: AXI4-Lite，接 CPU 互联矩阵
+    //    Port B: 简化 AXI4 Burst，当前先降维成 AXI4-Lite single-beat 使用
     // =========================================================================
-    axi_dp_sram_lite #(
+    axi_dp_sram_hybrid #(
         .MEM_SIZE(2097152) // 2MB
     ) main_memory (
         .clk            (clk),
         .resetn         (resetn),
 
-        // Port A: 接入 CPU 的互联矩阵 (M0)
+        // ==========================================================
+        // Port A: 接入 CPU 的互联矩阵 (AXI4-Lite)
+        // ==========================================================
         .axi_a_awvalid  (sram_awvalid),
         .axi_a_awready  (sram_awready),
         .axi_a_awaddr   (sram_awaddr),
@@ -305,15 +309,22 @@ module tb_picorv32;
         .axi_a_rdata    (sram_rdata),
         .axi_a_rresp    (sram_rresp),
 
-        // Port B: NPU DMA Master 直连！绝对纯净的 Lite 协议！
+        // ==========================================================
+        // Port B: NPU DMA Master 直连
+        // 当前 NPU Master 仍是 AXI4-Lite，所以这里把 AXI burst 信号固定成 single-beat
+        // ==========================================================
         .axi_b_awvalid  (npu_m_awvalid),
         .axi_b_awready  (npu_m_awready),
         .axi_b_awaddr   (npu_m_awaddr),
+        .axi_b_awlen    (8'd0),      // single-beat burst: len = 0，表示 1 beat
+        .axi_b_awsize   (3'd2),      // 32-bit data bus: 2^2 = 4 bytes
+        .axi_b_awburst  (2'b01),     // INCR burst
 
         .axi_b_wvalid   (npu_m_wvalid),
         .axi_b_wready   (npu_m_wready),
         .axi_b_wdata    (npu_m_wdata),
         .axi_b_wstrb    (npu_m_wstrb),
+        .axi_b_wlast    (1'b1),      // single-beat 写事务，每拍都是最后一拍
 
         .axi_b_bvalid   (npu_m_bvalid),
         .axi_b_bready   (npu_m_bready),
@@ -322,11 +333,15 @@ module tb_picorv32;
         .axi_b_arvalid  (npu_m_arvalid),
         .axi_b_arready  (npu_m_arready),
         .axi_b_araddr   (npu_m_araddr),
+        .axi_b_arlen    (8'd0),      // single-beat burst: len = 0，表示 1 beat
+        .axi_b_arsize   (3'd2),      // 32-bit data bus: 2^2 = 4 bytes
+        .axi_b_arburst  (2'b01),     // INCR burst
 
         .axi_b_rvalid   (npu_m_rvalid),
         .axi_b_rready   (npu_m_rready),
         .axi_b_rdata    (npu_m_rdata),
-        .axi_b_rresp    (npu_m_rresp)
+        .axi_b_rresp    (npu_m_rresp),
+        .axi_b_rlast    ()           // 当前 AXI-Lite NPU Master 不使用 rlast，悬空即可
     );
 
 endmodule

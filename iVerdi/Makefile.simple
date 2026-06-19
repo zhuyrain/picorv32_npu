@@ -30,7 +30,7 @@ SRC_FILES_1 = $(SRC_ROOT)/picorv32.v \
 			  $(SRC_ROOT_NPU)/axil_interconnect.v \
 			  $(SRC_ROOT_NPU)/arbiter.v \
 			  $(SRC_ROOT_NPU)/priority_encoder.v \
-			  $(SRC_ROOT_NPU)/axi_dp_sram_lite.v \
+			  $(SRC_ROOT_NPU)/axi_dp_sram_hybrid.v \
               $(SRC_ROOT_NPU)/tb_picorv32.v
 
 # [配置 2] 裸核 NPU 子系统独立仿真
@@ -58,6 +58,10 @@ SRC_FILES_3 = $(SRC_ROOT_NPU)/pe.v \
 			  $(SRC_ROOT_NPU)/priority_encoder.v \
 			  $(SRC_ROOT_NPU)/tb_npu_system.v
 
+# [配置 4] 双端口Burst SRAM & 虚拟CPU 仿真
+SRC_FILES_4 = $(SRC_ROOT_NPU)/axi_dp_sram_hybrid.v \
+			  $(SRC_ROOT_NPU)/tb_axi_dp_sram_hybrid_burst.v
+
 # 动态组装：根据 CASE 的值，把 SRC_FILES_1 或 SRC_FILES_2 赋值给 SRC_FILES
 SRC_FILES = $(SRC_FILES_$(CASE))
 
@@ -84,6 +88,10 @@ WAVE_FILE_FSDB_2 = tb_npu_core.fsdb
 # [配置 3] 裸核 NPU 子系统独立仿真
 WAVE_FILE_3 = tb_npu_system.vcd
 WAVE_FILE_FSDB_3 = tb_npu_system.fsdb
+
+# [配置 4] 双端口Burst SRAM & 虚拟CPU 仿真
+WAVE_FILE_4 = tb_axi_dp_sram_hybrid_burst.vcd
+WAVE_FILE_FSDB_4 = tb_axi_dp_sram_hybrid_burst.fsdb
 
 # 默认目标：编译 -> 运行 -> 转化波形文件
 all: compile run conv
