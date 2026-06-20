@@ -254,7 +254,8 @@ module npu_axi_wrapper_burst (
     // 【新增】：送给 Line Buffer 的分组读取控制线
     reg [2:0]   lb_read_ic_group;
     wire [31:0] lb_window_pixel_out;
-    
+    reg  [31:0] lb_pixel_wr_data_reg;
+
     reg         act_valid_in;
     wire [31:0] act_out_skewed;
     wire [ 3:0] act_valid_out_skewed;
@@ -286,7 +287,7 @@ module npu_axi_wrapper_burst (
         .cfg_ic_groups    (lb_cfg_ic_groups),
         .shift_line_en    (lb_shift_line_en),
         .pixel_wr_en      (lb_pixel_wr_en),
-        .pixel_wr_data    (m_axi_rdata), // 直接吃 AXI 读回的数据
+        .pixel_wr_data    (lb_pixel_wr_data_reg), // 直接吃 AXI 读回的数据
         .window_base_x    (lb_window_base_x),
         .kernel_kx        (lb_kernel_kx),
         .kernel_ky        (lb_kernel_ky),
@@ -452,6 +453,7 @@ module npu_axi_wrapper_burst (
             sa_weight_en     <= 1'b0;
             lb_shift_line_en <= 1'b0;
             lb_pixel_wr_en   <= 1'b0;
+            lb_pixel_wr_data_reg <= 32'd0;
             acc_preload_bias <= 1'b0;
 
             lb_kernel_kx     <= 2'd0;
@@ -645,28 +647,27 @@ module npu_axi_wrapper_burst (
                     // ----------------------------------------------------------
                     else if (ar_done) begin
                         if (m_axi_rvalid && m_axi_rready) begin
-                            lb_pixel_wr_en <= 1'b1;
-                            act_ptr        <= act_ptr + 32'd4;
+                            // 关键修复：
+                            // 当前 R beat 必须先锁存下来，下一拍再由 lb_pixel_wr_en 写入 Line Buffer。
+                            // 不能让 Line Buffer 直接吃 m_axi_rdata。
+                            lb_pixel_wr_data_reg <= m_axi_rdata;
+                            lb_pixel_wr_en       <= 1'b1;
+
+                            act_ptr <= act_ptr + 32'd4;
 
                             if (row_words_left != 16'd0)
                                 row_words_left <= row_words_left - 16'd1;
 
-                            // 当前 burst 结束，准备下一笔 burst 或本行结束
                             if (m_axi_rlast) begin
                                 m_axi_rready <= 1'b0;
                                 ar_done      <= 1'b0;
                             end
 
-                            // --------------------------------------------------
-                            // 原来的像素 / 通道组计数逻辑保持不变，
-                            // 只是现在每个 R beat 都会驱动一次。
-                            // --------------------------------------------------
                             if (ig_cnt == lb_cfg_ic_groups - 1'b1) begin
                                 ig_cnt    <= 3'd0;
                                 pixel_cnt <= pixel_cnt + 16'd1;
 
                                 if (pixel_cnt == cfg_img_w - 1'b1) begin
-                                    // 读完一整行的所有通道组
                                     if (oy == 16'd0 && !first_row_loaded) begin
                                         pixel_cnt        <= 16'd0;
                                         first_row_loaded <= 1'b1;
