@@ -25,7 +25,7 @@ SRC_FILES_1 = $(SRC_ROOT)/picorv32.v \
 			  $(SRC_ROOT_NPU)/npu_deskew_buffer.v \
 			  $(SRC_ROOT_NPU)/npu_sync_fifo.v \
 			  $(SRC_ROOT_NPU)/npu_line_buffer.v \
-              $(SRC_ROOT_NPU)/npu_axi_wrapper_lite.v \
+              $(SRC_ROOT_NPU)/npu_axi_wrapper_burst.v \
 			  $(SRC_ROOT_NPU)/axi_sram.v \
 			  $(SRC_ROOT_NPU)/axil_interconnect.v \
 			  $(SRC_ROOT_NPU)/arbiter.v \

@@ -83,14 +83,44 @@ module tb_picorv32;
     wire        npu_s_rvalid;  wire        npu_s_rready;  wire [31:0] npu_s_rdata; wire [ 1:0] npu_s_rresp;
     
     // =========================================================================
-    // 2.1 NPU Master直连SRAM PortB信号
+    // 2.1 NPU Master 直连 SRAM PortB 信号
     // =========================================================================
-    // --- M0: NPU AXI Master (AXI-Lite 格式) ---
-    wire        npu_m_awvalid; wire        npu_m_awready; wire [31:0] npu_m_awaddr;
-    wire        npu_m_wvalid;  wire        npu_m_wready;  wire [31:0] npu_m_wdata; wire [ 3:0] npu_m_wstrb;
-    wire        npu_m_bvalid;  wire        npu_m_bready;  wire [ 1:0] npu_m_bresp;
-    wire        npu_m_arvalid; wire        npu_m_arready; wire [31:0] npu_m_araddr;
-    wire        npu_m_rvalid;  wire        npu_m_rready;  wire [31:0] npu_m_rdata; wire [ 1:0] npu_m_rresp;
+    // --- M0: NPU AXI Master (简化 AXI4 Burst 格式) ---
+
+    // Write address channel
+    wire        npu_m_awvalid;
+    wire        npu_m_awready;
+    wire [31:0] npu_m_awaddr;
+    wire [ 7:0] npu_m_awlen;
+    wire [ 2:0] npu_m_awsize;
+    wire [ 1:0] npu_m_awburst;
+
+    // Write data channel
+    wire        npu_m_wvalid;
+    wire        npu_m_wready;
+    wire [31:0] npu_m_wdata;
+    wire [ 3:0] npu_m_wstrb;
+    wire        npu_m_wlast;
+
+    // Write response channel
+    wire        npu_m_bvalid;
+    wire        npu_m_bready;
+    wire [ 1:0] npu_m_bresp;
+
+    // Read address channel
+    wire        npu_m_arvalid;
+    wire        npu_m_arready;
+    wire [31:0] npu_m_araddr;
+    wire [ 7:0] npu_m_arlen;
+    wire [ 2:0] npu_m_arsize;
+    wire [ 1:0] npu_m_arburst;
+
+    // Read data channel
+    wire        npu_m_rvalid;
+    wire        npu_m_rready;
+    wire [31:0] npu_m_rdata;
+    wire [ 1:0] npu_m_rresp;
+    wire        npu_m_rlast;
 
     // =========================================================================
     // 3. 例化核心 CPU (PicoRV32 Master)
@@ -254,29 +284,79 @@ module tb_picorv32;
     // =========================================================================
     // 6. 例化 NPU 异构加速子系统
     // =========================================================================
-    npu_axi_wrapper_lite u_npu_wrapper (
+    npu_axi_wrapper_burst u_npu_wrapper (
         .clk            (clk), 
         .rst_n          (resetn),
         
-        // Slave 配置接口 (接互联矩阵的 S1)
-        .s_axi_awvalid  (npu_s_awvalid), .s_axi_awready(npu_s_awready), .s_axi_awaddr (npu_s_awaddr),
-        .s_axi_wvalid   (npu_s_wvalid),  .s_axi_wready (npu_s_wready),  .s_axi_wdata  (npu_s_wdata), .s_axi_wstrb(npu_s_wstrb),
-        .s_axi_bvalid   (npu_s_bvalid),  .s_axi_bready (npu_s_bready),  .s_axi_bresp  (npu_s_bresp),
-        .s_axi_arvalid  (npu_s_arvalid), .s_axi_arready(npu_s_arready), .s_axi_araddr (npu_s_araddr),
-        .s_axi_rvalid   (npu_s_rvalid),  .s_axi_rready (npu_s_rready),  .s_axi_rdata  (npu_s_rdata), .s_axi_rresp(npu_s_rresp),
+        // ==========================================================
+        // Slave 配置接口：接 CPU 互联矩阵的 S1
+        // ==========================================================
+        .s_axi_awvalid  (npu_s_awvalid),
+        .s_axi_awready  (npu_s_awready),
+        .s_axi_awaddr   (npu_s_awaddr),
+
+        .s_axi_wvalid   (npu_s_wvalid),
+        .s_axi_wready   (npu_s_wready),
+        .s_axi_wdata    (npu_s_wdata),
+        .s_axi_wstrb    (npu_s_wstrb),
+
+        .s_axi_bvalid   (npu_s_bvalid),
+        .s_axi_bready   (npu_s_bready),
+        .s_axi_bresp    (npu_s_bresp),
+
+        .s_axi_arvalid  (npu_s_arvalid),
+        .s_axi_arready  (npu_s_arready),
+        .s_axi_araddr   (npu_s_araddr),
+
+        .s_axi_rvalid   (npu_s_rvalid),
+        .s_axi_rready   (npu_s_rready),
+        .s_axi_rdata    (npu_s_rdata),
+        .s_axi_rresp    (npu_s_rresp),
         
-        // Master 访存接口 (输出 Lite 信号，准备桥接)
-        .m_axi_arvalid  (npu_m_arvalid), .m_axi_arready(npu_m_arready), .m_axi_araddr (npu_m_araddr),
-        .m_axi_rvalid   (npu_m_rvalid),  .m_axi_rready (npu_m_rready),  .m_axi_rdata  (npu_m_rdata),
-        .m_axi_awvalid  (npu_m_awvalid), .m_axi_awready(npu_m_awready), .m_axi_awaddr (npu_m_awaddr),
-        .m_axi_wvalid   (npu_m_wvalid),  .m_axi_wready (npu_m_wready),  .m_axi_wdata  (npu_m_wdata), .m_axi_wstrb(npu_m_wstrb),
-        .m_axi_bvalid   (npu_m_bvalid),  .m_axi_bready (npu_m_bready)
+        // ==========================================================
+        // Master 访存接口：简化 AXI4 Burst，直连 SRAM Port B
+        // ==========================================================
+
+        // Read address channel
+        .m_axi_arvalid  (npu_m_arvalid),
+        .m_axi_arready  (npu_m_arready),
+        .m_axi_araddr   (npu_m_araddr),
+        .m_axi_arlen    (npu_m_arlen),
+        .m_axi_arsize   (npu_m_arsize),
+        .m_axi_arburst  (npu_m_arburst),
+
+        // Read data channel
+        .m_axi_rvalid   (npu_m_rvalid),
+        .m_axi_rready   (npu_m_rready),
+        .m_axi_rdata    (npu_m_rdata),
+        .m_axi_rresp    (npu_m_rresp),
+        .m_axi_rlast    (npu_m_rlast),
+
+        // Write address channel
+        .m_axi_awvalid  (npu_m_awvalid),
+        .m_axi_awready  (npu_m_awready),
+        .m_axi_awaddr   (npu_m_awaddr),
+        .m_axi_awlen    (npu_m_awlen),
+        .m_axi_awsize   (npu_m_awsize),
+        .m_axi_awburst  (npu_m_awburst),
+
+        // Write data channel
+        .m_axi_wvalid   (npu_m_wvalid),
+        .m_axi_wready   (npu_m_wready),
+        .m_axi_wdata    (npu_m_wdata),
+        .m_axi_wstrb    (npu_m_wstrb),
+        .m_axi_wlast    (npu_m_wlast),
+
+        // Write response channel
+        .m_axi_bvalid   (npu_m_bvalid),
+        .m_axi_bready   (npu_m_bready),
+        .m_axi_bresp    (npu_m_bresp)
     );
 
     // =========================================================================
     // 7. 例化 我们自己手搓的 混合端口 SRAM (2MB)
     //    Port A: AXI4-Lite，接 CPU 互联矩阵
-    //    Port B: 简化 AXI4 Burst，当前先降维成 AXI4-Lite single-beat 使用
+    //    Port B: 简化 AXI4 Burst，NPU DMA Master 直连
     // =========================================================================
     axi_dp_sram_hybrid #(
         .MEM_SIZE(2097152) // 2MB
@@ -310,38 +390,43 @@ module tb_picorv32;
         .axi_a_rresp    (sram_rresp),
 
         // ==========================================================
-        // Port B: NPU DMA Master 直连
-        // 当前 NPU Master 仍是 AXI4-Lite，所以这里把 AXI burst 信号固定成 single-beat
+        // Port B: NPU DMA Master 直连，简化 AXI4 Burst 协议
         // ==========================================================
+
+        // Write address channel
         .axi_b_awvalid  (npu_m_awvalid),
         .axi_b_awready  (npu_m_awready),
         .axi_b_awaddr   (npu_m_awaddr),
-        .axi_b_awlen    (8'd0),      // single-beat burst: len = 0，表示 1 beat
-        .axi_b_awsize   (3'd2),      // 32-bit data bus: 2^2 = 4 bytes
-        .axi_b_awburst  (2'b01),     // INCR burst
+        .axi_b_awlen    (npu_m_awlen),
+        .axi_b_awsize   (npu_m_awsize),
+        .axi_b_awburst  (npu_m_awburst),
 
+        // Write data channel
         .axi_b_wvalid   (npu_m_wvalid),
         .axi_b_wready   (npu_m_wready),
         .axi_b_wdata    (npu_m_wdata),
         .axi_b_wstrb    (npu_m_wstrb),
-        .axi_b_wlast    (1'b1),      // single-beat 写事务，每拍都是最后一拍
+        .axi_b_wlast    (npu_m_wlast),
 
+        // Write response channel
         .axi_b_bvalid   (npu_m_bvalid),
         .axi_b_bready   (npu_m_bready),
         .axi_b_bresp    (npu_m_bresp),
 
+        // Read address channel
         .axi_b_arvalid  (npu_m_arvalid),
         .axi_b_arready  (npu_m_arready),
         .axi_b_araddr   (npu_m_araddr),
-        .axi_b_arlen    (8'd0),      // single-beat burst: len = 0，表示 1 beat
-        .axi_b_arsize   (3'd2),      // 32-bit data bus: 2^2 = 4 bytes
-        .axi_b_arburst  (2'b01),     // INCR burst
+        .axi_b_arlen    (npu_m_arlen),
+        .axi_b_arsize   (npu_m_arsize),
+        .axi_b_arburst  (npu_m_arburst),
 
+        // Read data channel
         .axi_b_rvalid   (npu_m_rvalid),
         .axi_b_rready   (npu_m_rready),
         .axi_b_rdata    (npu_m_rdata),
         .axi_b_rresp    (npu_m_rresp),
-        .axi_b_rlast    ()           // 当前 AXI-Lite NPU Master 不使用 rlast，悬空即可
+        .axi_b_rlast    (npu_m_rlast)
     );
 
 endmodule
