@@ -456,6 +456,7 @@ module npu_axi_wrapper_burst (
             lb_pixel_wr_data_reg <= 32'd0;
             acc_preload_bias <= 1'b0;
 
+            // 坐标寄存器复位
             lb_kernel_kx     <= 2'd0;
             lb_kernel_ky     <= 2'd0;
             lb_read_ic_group <= 3'd0;
@@ -466,12 +467,16 @@ module npu_axi_wrapper_burst (
             drain_cnt      <= 16'd0;
             row_words_left <= 16'd0;
 
+            ox <= 16'd0;
+            oy <= 16'd0;
+            weight_cycle_cnt <= 6'd0;
+
             // AXI read channel reset
             m_axi_arvalid <= 1'b0;
             m_axi_araddr  <= 32'd0;
             m_axi_arlen   <= 8'd0;
-            m_axi_arsize  <= 3'd2;
-            m_axi_arburst <= 2'b01;
+            m_axi_arsize  <= 3'd0;
+            m_axi_arburst <= 2'b00;
             m_axi_rready  <= 1'b0;
         end else begin
             npu_done_pulse <= 0; // 默认清零脉冲
@@ -531,7 +536,7 @@ module npu_axi_wrapper_burst (
                         m_axi_arlen   <= 8'd3;      // 4 beats
                         m_axi_arsize  <= 3'd2;      // 4 bytes / beat
                         m_axi_arburst <= 2'b01;     // INCR
-
+                        //应该把上面那部分写为else块并放到下面的if块后面
                         if (m_axi_arvalid && m_axi_arready) begin
                             m_axi_arvalid <= 1'b0;
                             m_axi_rready  <= 1'b1;
@@ -652,9 +657,9 @@ module npu_axi_wrapper_burst (
                             // 不能让 Line Buffer 直接吃 m_axi_rdata。
                             lb_pixel_wr_data_reg <= m_axi_rdata;
                             lb_pixel_wr_en       <= 1'b1;
-
+                            //  没必要每次r握手+4，一旦ar握手成功，直接+(awlen+1)左移2
                             act_ptr <= act_ptr + 32'd4;
-
+                            //  没必要每次r握手-1，一旦ar握手成功，直接-(awlen+1)
                             if (row_words_left != 16'd0)
                                 row_words_left <= row_words_left - 16'd1;
 
