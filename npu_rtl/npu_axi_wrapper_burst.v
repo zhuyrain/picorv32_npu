@@ -625,12 +625,7 @@ module npu_axi_wrapper_burst (
                     lb_pixel_wr_en   <= 1'b0;
 
                     // ----------------------------------------------------------
-                    // 1. 如果当前没有正在接收的 burst，并且本行还有 word 没读，
-                    //    就发起一笔新的 INCR burst。
-                    //
-                    // row_burst_words 会自动限制：
-                    //   - 不超过 256 beats
-                    //   - 不跨 4KB 边界
+                    // 1. AR 请求阶段：完美契约，一次性扣除！
                     // ----------------------------------------------------------
                     if (!ar_done && row_words_left != 16'd0) begin
                         m_axi_arvalid <= 1'b1;
@@ -640,47 +635,41 @@ module npu_axi_wrapper_burst (
                         m_axi_arburst <= 2'b01;
 
                         if (m_axi_arvalid && m_axi_arready) begin
-                            m_axi_arvalid <= 1'b0;
-                            m_axi_rready  <= 1'b1;
-                            ar_done       <= 1'b1;
+                            m_axi_arvalid  <= 1'b0;
+                            m_axi_rready   <= 1'b1;
+                            ar_done        <= 1'b1;
+                            
+                            // 发号施令的瞬间，指针和剩余量直接结算！
+                            act_ptr        <= act_ptr + ( ({24'd0, row_burst_arlen} + 32'd1) << 2 );
+                            row_words_left <= row_words_left - ({8'd0, row_burst_arlen} + 16'd1);
                         end
                     end
 
                     // ----------------------------------------------------------
-                    // 2. 接收 R beat。
-                    //    每来一个 32-bit word，就写入 line buffer。
+                    // 2. R 接收阶段：无脑泄洪，只看 RLAST 时的“先知”裁决！
                     // ----------------------------------------------------------
                     else if (ar_done) begin
                         if (m_axi_rvalid && m_axi_rready) begin
-                            // 关键修复：
-                            // 当前 R beat 必须先锁存下来，下一拍再由 lb_pixel_wr_en 写入 Line Buffer。
-                            // 不能让 Line Buffer 直接吃 m_axi_rdata。
+                            // 数据无脑延迟一拍拍进 Line Buffer
                             lb_pixel_wr_data_reg <= m_axi_rdata;
                             lb_pixel_wr_en       <= 1'b1;
-                            //  没必要每次r握手+4，一旦ar握手成功，直接+(awlen+1)左移2
-                            act_ptr <= act_ptr + 32'd4;
-                            //  没必要每次r握手-1，一旦ar握手成功，直接-(awlen+1)
-                            if (row_words_left != 16'd0)
-                                row_words_left <= row_words_left - 16'd1;
 
                             if (m_axi_rlast) begin
                                 m_axi_rready <= 1'b0;
                                 ar_done      <= 1'b0;
-                            end
 
-                            if (ig_cnt == lb_cfg_ic_groups - 1'b1) begin
-                                ig_cnt    <= 3'd0;
-                                pixel_cnt <= pixel_cnt + 16'd1;
-
-                                if (pixel_cnt == cfg_img_w - 1'b1) begin
+                                // 【终极降维打击】：怎么判断这一行结束了？
+                                // 因为 row_words_left 在 AR 阶段就被提前扣减了。
+                                // 如果当前收到的这笔 Burst 的 RLAST 到来，且 row_words_left 为 0，
+                                // 说明这就是本行的最后一笔 Burst 的最后一个数据！一行结束！
+                                if (row_words_left == 16'd0) begin
+                                    
                                     if (oy == 16'd0 && !first_row_loaded) begin
-                                        pixel_cnt        <= 16'd0;
                                         first_row_loaded <= 1'b1;
-                                        row_words_left   <= row_word_count;
+                                        row_words_left   <= row_word_count; // 为 Shift Line 初始化下一行
                                         state            <= S_SHIFT_LINE_INIT;
                                     end else begin
                                         lb_window_base_x <= ox[5:0];
-
                                         lb_kernel_kx     <= 2'd0;
                                         lb_kernel_ky     <= 2'd0;
                                         lb_read_ic_group <= 3'd0;
@@ -694,8 +683,8 @@ module npu_axi_wrapper_burst (
                                         end
                                     end
                                 end
-                            end else begin
-                                ig_cnt <= ig_cnt + 3'd1;
+                                // 如果 row_words_left != 0，什么都不用做！
+                                // ar_done 变低后，下一拍状态机会自动发起下一次 AR 续传！
                             end
                         end
                     end
