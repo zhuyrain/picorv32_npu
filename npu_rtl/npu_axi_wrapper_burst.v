@@ -410,32 +410,47 @@ module npu_axi_wrapper_burst (
     reg        ar_done, aw_done, w_done;
     reg        first_row_loaded;
 
+// =========================================================
+    // AXI 统一动态读通道配置器 (支持 4KB 保护与量纲复用)
+    // 适用范围：Bias, Weight, Act_Row 任何长短读请求！
     // =========================================================
-    // AXI burst read helper for row loading
-    // =========================================================
-    // 一行需要读取的 32-bit word 数：img_w * ic_groups
-    wire [15:0] row_word_count =
-        cfg_img_w * {13'd0, lb_cfg_ic_groups};
+    // Act_Row 一行需要读取的 32-bit word 数：img_w * ic_groups
+    wire [15:0] row_word_count = cfg_img_w * {13'd0, lb_cfg_ic_groups};
+    wire [15:0] bias_word_count = 16'd4;
+    wire [15:0] weight_word_count = {10'd0, sa_cfg_weight_num} << 2;
 
-    // 当前 act_ptr 距离下一个 4KB 边界还剩多少个 32-bit word
-    // 假设 act_ptr 4-byte aligned
+    // 核心路由 1：MUX 当前指针
+    wire [31:0] current_read_ptr = 
+        (state == S_LOAD_BIAS)   ? bias_ptr :
+        (state == S_LOAD_WEIGHT) ? weight_ptr :
+        (state == S_LOAD_ROW)    ? act_ptr : 32'd0;
+
+    // 核心路由 2：MUX 当前剩余量
+    wire [15:0] current_words_left = 
+        (state == S_LOAD_BIAS)   ? bias_words_left :
+        (state == S_LOAD_WEIGHT) ? weight_words_left :
+        (state == S_LOAD_ROW)    ? row_words_left : 16'd0;
+
+    // 1. 计算当前指针距离下一个 4KB 边界还有多少个 32-bit Word
+    // 假设指针 4-byte 对齐。1024 个 words 等于 4KB。
     wire [15:0] words_to_4kb_boundary =
-        16'd1024 - {6'd0, act_ptr[11:2]};
+        16'd1024 - {6'd0, current_read_ptr[11:2]};
 
-    // AXI4 单笔 burst 最多 256 beats
-    wire [15:0] row_burst_cap_words =
-        (row_words_left > 16'd256) ? 16'd256 : row_words_left;
+    // 2. AXI4 单笔 burst 最多 256 beats
+    wire [15:0] safe_burst_cap_words =
+        (current_words_left > 16'd256) ? 16'd256 : current_words_left;
 
-    // 同时避免跨 4KB 边界
-    wire [15:0] row_burst_words =
-        (row_burst_cap_words > words_to_4kb_boundary) ?
-            words_to_4kb_boundary :
-            row_burst_cap_words;
+    // 3. 终极裁决：同时避免跨 4KB 边界与超越总剩余量
+    wire [15:0] safe_burst_words =
+        (safe_burst_cap_words > words_to_4kb_boundary) ?
+            words_to_4kb_boundary : safe_burst_cap_words;
 
-    // AXI AxLEN = beats - 1
-    wire [7:0] row_burst_arlen =
-        row_burst_words[7:0] - 8'd1;
+    // 4. AXI AxLEN = beats - 1
+    wire [7:0] safe_arlen = safe_burst_words[7:0] - 8'd1;
 
+    // 独立的三组剩余量寄存器
+    reg [15:0] bias_words_left;
+    reg [15:0] weight_words_left;
     reg [15:0] row_words_left;
 
     always @(posedge clk or negedge rst_n) begin
@@ -466,6 +481,7 @@ module npu_axi_wrapper_burst (
             pixel_cnt      <= 16'd0;
             drain_cnt      <= 16'd0;
             row_words_left <= 16'd0;
+            bias_words_left<= 16'd0;
 
             ox <= 16'd0;
             oy <= 16'd0;
@@ -500,7 +516,8 @@ module npu_axi_wrapper_burst (
                     m_axi_rready  <= 1'b0;
 
                     row_words_left <= 16'd0;
-
+                    bias_words_left<= 16'd0;
+                    weight_words_left <= 16'd0;
                     if (npu_start_pulse) begin
                         npu_busy   <= 1'b1;
 
@@ -520,6 +537,8 @@ module npu_axi_wrapper_burst (
                         lb_kernel_ky     <= 2'd0;
                         lb_read_ic_group <= 3'd0;
 
+                        bias_words_left  <= bias_word_count;
+                        
                         state <= S_LOAD_BIAS;
                     end
                 end
@@ -529,36 +548,43 @@ module npu_axi_wrapper_burst (
                     lb_pixel_wr_en   <= 1'b0;
                     lb_shift_line_en <= 1'b0;
 
-                    // 1. 发起 4-beat burst read
-                    if (!ar_done) begin
-                        m_axi_arvalid <= 1'b1;
-                        m_axi_araddr  <= bias_ptr;
-                        m_axi_arlen   <= 8'd3;      // 4 beats
-                        m_axi_arsize  <= 3'd2;      // 4 bytes / beat
-                        m_axi_arburst <= 2'b01;     // INCR
-                        //应该把上面那部分写为else块并放到下面的if块后面
+                    // 1. 发起带 4KB 保护的长突发请求
+                    if (!ar_done && bias_words_left != 16'd0) begin
+                        // 按照要求：将握手清零逻辑写在上面
                         if (m_axi_arvalid && m_axi_arready) begin
-                            m_axi_arvalid <= 1'b0;
-                            m_axi_rready  <= 1'b1;
-                            ar_done       <= 1'b1;
-                            pack_cnt      <= 3'd0;
+                            m_axi_arvalid   <= 1'b0;
+                            m_axi_rready    <= 1'b1;
+                            ar_done         <= 1'b1;
+                            
+                            // 发号施令瞬间结算！（注意乘法优先级括号）
+                            bias_ptr        <= bias_ptr + ( ({24'd0, safe_arlen} + 32'd1) << 2 );
+                            bias_words_left <= bias_words_left - ({8'd0, safe_arlen} + 16'd1);
+                        end else begin
+                            m_axi_arvalid <= 1'b1;
+                            m_axi_araddr  <= current_read_ptr;  // 完美复用路由 MUX
+                            m_axi_arlen   <= safe_arlen;        // 完美复用动态裁决
+                            m_axi_arsize  <= 3'd2;              // 4 bytes / beat
+                            m_axi_arburst <= 2'b01;             // INCR
                         end
                     end
 
-                    // 2. 连续接收 4 个 R beat
-                    else begin
+                    // 2. 连续接收 R beat (不再需要 pack_cnt 控制状态转移)
+                    else if (ar_done) begin
                         if (m_axi_rvalid && m_axi_rready) begin
+                            // 移位寄存器接收
                             acc_bias_in <= {m_axi_rdata, acc_bias_in[127:32]};
-                            bias_ptr    <= bias_ptr + 32'd4;
 
-                            if (pack_cnt == 3'd3) begin
-                                m_axi_rready    <= 1'b0;
-                                ar_done         <= 1'b0;
-                                pack_cnt        <= 3'd0;
-                                acc_preload_bias <= 1'b1;
-                                state           <= S_LOAD_WEIGHT;
-                            end else begin
-                                pack_cnt <= pack_cnt + 3'd1;
+                            // 判断本次物理 Burst 结束
+                            if (m_axi_rlast) begin
+                                m_axi_rready <= 1'b0;
+                                ar_done      <= 1'b0;
+
+                                // 降维打击裁决：无论被 4KB 切成多少段，只看最后剩余量！
+                                if (bias_words_left == 16'd0) begin
+                                    acc_preload_bias <= 1'b1;
+                                    weight_words_left<= weight_word_count;
+                                    state            <= S_LOAD_WEIGHT;
+                                end
                             end
                         end
                     end
@@ -566,54 +592,55 @@ module npu_axi_wrapper_burst (
 
                 S_LOAD_WEIGHT: begin
                     acc_preload_bias <= 1'b0;
-                    sa_weight_en     <= 1'b0;
+                    sa_weight_en     <= 1'b0; // 默认拉低脉冲
                     lb_pixel_wr_en   <= 1'b0;
                     lb_shift_line_en <= 1'b0;
 
-                    // 1. 发起 4-beat burst read，读取一组 128-bit weight
-                    if (!ar_done) begin
-                        m_axi_arvalid <= 1'b1;
-                        m_axi_araddr  <= weight_ptr;
-                        m_axi_arlen   <= 8'd3;      // 4 beats
-                        m_axi_arsize  <= 3'd2;      // 4 bytes / beat
-                        m_axi_arburst <= 2'b01;     // INCR
-
+                    // 1. 发起带 4KB 保护的长突发流式请求
+                    if (!ar_done && weight_words_left != 16'd0) begin
                         if (m_axi_arvalid && m_axi_arready) begin
-                            m_axi_arvalid <= 1'b0;
-                            m_axi_rready  <= 1'b1;
-                            ar_done       <= 1'b1;
-                            pack_cnt      <= 3'd0;
+                            m_axi_arvalid     <= 1'b0;
+                            m_axi_rready      <= 1'b1;
+                            ar_done           <= 1'b1;
+                            
+                            // 瞬间结算！
+                            weight_ptr        <= weight_ptr + ( ({24'd0, safe_arlen} + 32'd1) << 2 );
+                            weight_words_left <= weight_words_left - ({8'd0, safe_arlen} + 16'd1);
+                        end else begin
+                            m_axi_arvalid <= 1'b1;
+                            m_axi_araddr  <= current_read_ptr;  // 完美复用路由 MUX
+                            m_axi_arlen   <= safe_arlen;        // 完美复用动态裁决
+                            m_axi_arsize  <= 3'd2;              // 4 bytes / beat
+                            m_axi_arburst <= 2'b01;             // INCR
                         end
                     end
 
-                    // 2. 连续接收 4 个 R beat
-                    else begin
+                    // 2. 零气泡接收通道
+                    else if (ar_done) begin
                         if (m_axi_rvalid && m_axi_rready) begin
                             sa_top_weight_in <= {m_axi_rdata, sa_top_weight_in[127:32]};
-                            weight_ptr       <= weight_ptr + 32'd4;
 
+                            // 【核心防御】：这里绝不受 4KB 物理打断的影响，稳定每 4 拍产生一次拉高脉冲
                             if (pack_cnt == 3'd3) begin
+                                // m_axi_rready <= 1'b0; // 如果你的 SA 结构需要，可以恢复这里的反压；如果不反压更佳，直接删掉这句。
+                                sa_weight_en <= 1'b1;
+                                pack_cnt     <= 3'd0;
+                            end else begin
+                                pack_cnt     <= pack_cnt + 3'd1;
+                            end
+
+                            if (m_axi_rlast) begin
                                 m_axi_rready <= 1'b0;
                                 ar_done      <= 1'b0;
-                                pack_cnt     <= 3'd0;
 
-                                sa_weight_en <= 1'b1;
-
-                                if (weight_cycle_cnt == sa_cfg_weight_num - 1'b1) begin
-                                    weight_cycle_cnt <= 6'd0;
-                                    pixel_cnt        <= 16'd0;
-                                    ig_cnt           <= 3'd0;
-
+                                // 同样降维打击：不用数 weight_cycle_cnt 了！
+                                // 只要所有词收完了，就是整层权重加载完毕！
+                                if (weight_words_left == 16'd0) begin
+                                    // pack_cnt         <= 3'd0;
                                     row_words_left   <= row_word_count;
-
-                                    // Pad Top：在读图前先卷一次 0 进来
-                                    lb_shift_line_en <= 1'b1;
+                                    lb_shift_line_en <= 1'b1; // Pad Top
                                     state            <= S_LOAD_ROW;
-                                end else begin
-                                    weight_cycle_cnt <= weight_cycle_cnt + 6'd1;
                                 end
-                            end else begin
-                                pack_cnt <= pack_cnt + 3'd1;
                             end
                         end
                     end
@@ -628,20 +655,20 @@ module npu_axi_wrapper_burst (
                     // 1. AR 请求阶段：完美契约，一次性扣除！
                     // ----------------------------------------------------------
                     if (!ar_done && row_words_left != 16'd0) begin
-                        m_axi_arvalid <= 1'b1;
-                        m_axi_araddr  <= act_ptr;
-                        m_axi_arlen   <= row_burst_arlen;
-                        m_axi_arsize  <= 3'd2;
-                        m_axi_arburst <= 2'b01;
-
                         if (m_axi_arvalid && m_axi_arready) begin
                             m_axi_arvalid  <= 1'b0;
                             m_axi_rready   <= 1'b1;
                             ar_done        <= 1'b1;
                             
                             // 发号施令的瞬间，指针和剩余量直接结算！
-                            act_ptr        <= act_ptr + ( ({24'd0, row_burst_arlen} + 32'd1) << 2 );
-                            row_words_left <= row_words_left - ({8'd0, row_burst_arlen} + 16'd1);
+                            act_ptr        <= act_ptr + ( ({24'd0, safe_arlen} + 32'd1) << 2 );
+                            row_words_left <= row_words_left - ({8'd0, safe_arlen} + 16'd1);
+                        end else begin
+                            m_axi_arvalid <= 1'b1;
+                            m_axi_araddr  <= act_ptr;
+                            m_axi_arlen   <= safe_arlen;
+                            m_axi_arsize  <= 3'd2;
+                            m_axi_arburst <= 2'b01;
                         end
                     end
 
