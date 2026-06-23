@@ -1,6 +1,12 @@
 `timescale 1ns / 1ps
 
-module npu_axi_wrapper_burst (
+module npu_axi_wrapper_burst #(
+    // 物理阵列规模参数 (默认 4，可被顶层覆盖为 32)
+    parameter SYS_ROWS = 4, 
+    parameter SYS_COLS = 4,
+    // 自动计算所需的计数器位宽
+    localparam PC_W = $clog2(SYS_COLS + 1) // 如果 COLS=4，位宽是3；如果 COLS=32，位宽是6
+)(
     input  wire         clk,
     input  wire         rst_n,
 
@@ -245,49 +251,52 @@ module npu_axi_wrapper_burst (
         end
     end
     // =========================================================
-    // [模块 2]: NPU 内部算力引擎例化 (Datapath)
+    // [模块 2]: NPU 内部算力引擎例化 (Datapath) - 参数化版
     // =========================================================
     // 互联线网
     reg         lb_shift_line_en, lb_pixel_wr_en;
     reg  [5:0]  lb_window_base_x;
     reg  [1:0]  lb_kernel_kx, lb_kernel_ky;
-    // 【新增】：送给 Line Buffer 的分组读取控制线
-    reg [2:0]   lb_read_ic_group;
-    wire [31:0] lb_window_pixel_out;
-    reg  [31:0] lb_pixel_wr_data_reg;
+    reg  [2:0]  lb_read_ic_group;
+    
+    // 【参数化】：Line Buffer 吐出的 1D 列向量宽 = 行数 * 8-bit
+    wire [SYS_ROWS*8-1:0] lb_window_pixel_out;
+    reg  [31:0]           lb_pixel_wr_data_reg;
 
-    reg         act_valid_in;
-    wire [31:0] act_out_skewed;
-    wire [ 3:0] act_valid_out_skewed;
+    reg                   act_valid_in;
+    wire [SYS_ROWS*8-1:0] act_out_skewed;
+    wire [SYS_ROWS-1:0]   act_valid_out_skewed;
 
-    reg         sa_weight_en;
-    reg [127:0] sa_top_weight_in;
-    wire[127:0] sa_bottom_psum_out;
-    wire[ 3:0]  sa_bottom_valid_out;
+    reg                   sa_weight_en;
+    // 【注意】：此处改为 wire，因为要用提供的 generate 数组逻辑来驱动它们
+    wire [SYS_COLS*32-1:0] sa_top_weight_in;
+    wire [SYS_COLS*32-1:0] sa_bottom_psum_out;
+    wire [SYS_COLS-1:0]    sa_bottom_valid_out;
 
-    reg         acc_preload_bias;
-    reg [127:0] acc_bias_in;
-    wire[127:0] final_acc_out;
-    wire[ 3:0]  ppu_valid_trigger;
+    reg                    acc_preload_bias;
+    wire [SYS_COLS*32-1:0] acc_bias_in;     // 同上，由 Bias 缓冲数组驱动
+    wire [SYS_COLS*32-1:0] final_acc_out;
+    wire [SYS_COLS-1:0]    ppu_valid_trigger;
 
-    wire[ 3:0]  ppu_valid_out;
-    wire[31:0]  ppu_data_out;
-    wire[31:0]  deskewed_data_out;
-    wire        deskewed_valid_out;
+    wire [SYS_COLS-1:0]    ppu_valid_out;
+    // 【参数化】：输出特征图宽 = 列数 * 8-bit
+    wire [SYS_COLS*8-1:0]  ppu_data_out;
+    wire [SYS_COLS*8-1:0]  deskewed_data_out;
+    wire                   deskewed_valid_out;
 
     npu_line_buffer #(
         .MAX_LINE_WIDTH(34), 
         .PAD_SIZE(1), 
-        .MAX_DATA_WIDTH(128),
-        .DATA_WIDTH(32)
-        ) u_lb (
+        .MAX_DATA_WIDTH(128),     // 若未来扩充更大图像，此参数也可适当放大
+        .DATA_WIDTH(SYS_ROWS * 8) // 【核心修改】：自动匹配物理行宽
+    ) u_lb (
         .clk              (clk),
         .rst_n            (rst_n),
         .cfg_line_width   (lb_cfg_line_width),
         .cfg_ic_groups    (lb_cfg_ic_groups),
         .shift_line_en    (lb_shift_line_en),
         .pixel_wr_en      (lb_pixel_wr_en),
-        .pixel_wr_data    (lb_pixel_wr_data_reg), // 直接吃 AXI 读回的数据
+        .pixel_wr_data    (lb_pixel_wr_data_reg), // 直接吃 AXI 读回的 32-bit 数据
         .window_base_x    (lb_window_base_x),
         .kernel_kx        (lb_kernel_kx),
         .kernel_ky        (lb_kernel_ky),
@@ -296,9 +305,9 @@ module npu_axi_wrapper_burst (
     );
 
     act_skew_buffer #(
-        .ROWS(4), 
+        .ROWS(SYS_ROWS), 
         .DATA_WIDTH(8)
-        ) u_skew (
+    ) u_skew (
         .clk                  (clk),
         .rst_n                (rst_n),
         .pad_en               (1'b0),
@@ -308,7 +317,11 @@ module npu_axi_wrapper_burst (
         .act_valid_out_skewed (act_valid_out_skewed)
     );
 
-    sa_4_4 u_sa (
+    // 【核心修改】：将原先的 sa_4_4 替换为你编写的通用参数化阵列名 (如 sa_array)
+    sa #(
+        .ROWS(SYS_ROWS),
+        .COLS(SYS_COLS)
+    ) u_sa (
         .clk              (clk),
         .rst_n            (rst_n),
         .cfg_weight_num   (sa_cfg_weight_num),
@@ -316,15 +329,15 @@ module npu_axi_wrapper_burst (
         .left_act_in      (act_out_skewed),
         .left_act_valid   (act_valid_out_skewed),
         .top_weight_in    (sa_top_weight_in),
-        .top_bias_in      (128'd0), 
+        .top_bias_in      ({(SYS_COLS*32){1'b0}}), // 动态适配填 0
         .bottom_psum_out  (sa_bottom_psum_out),
         .bottom_valid_out (sa_bottom_valid_out)
     );
 
     npu_bottom_acc #(
-        .COLS(4), 
+        .COLS(SYS_COLS), 
         .PSUM_WIDTH(32)
-        ) u_acc (
+    ) u_acc (
         .clk             (clk),
         .rst_n           (rst_n),
         .cfg_window_size ({2'b0, sa_cfg_weight_num}), // 固定 9 拍一个窗口
@@ -337,8 +350,8 @@ module npu_axi_wrapper_burst (
     );
 
     npu_ppu #(
-        .COLS(4)
-        ) u_ppu (
+        .COLS(SYS_COLS)
+    ) u_ppu (
         .clk            (clk),
         .rst_n          (rst_n),
         .cfg_multiplier ({16'b0,reg_cfg_quant[15:0]}),
@@ -352,9 +365,9 @@ module npu_axi_wrapper_burst (
     );
 
     npu_deskew_buffer #(
-        .COLS(4), 
+        .COLS(SYS_COLS), 
         .DATA_WIDTH(8)
-        ) u_deskew (
+    ) u_deskew (
         .clk                (clk),
         .rst_n              (rst_n),
         .ppu_data_in        (ppu_data_out),
@@ -363,19 +376,22 @@ module npu_axi_wrapper_burst (
         .deskewed_valid_out (deskewed_valid_out)
     );
 
-    wire        fifo_empty;
-    wire        fifo_full;
-    wire        fifo_almost_full;
-    wire [31:0] fifo_rd_data;
+    wire                       fifo_empty;
+    wire                       fifo_full;
+    wire                       fifo_almost_full;
+    // 【参数化】：FIFO 读出位宽与列数绑定
+    wire [SYS_COLS*8-1:0]      fifo_rd_data;
 
     npu_sync_fifo #(
-        .DATA_WIDTH(32), .ADDR_WIDTH(4), .ALMOST_FULL_THRESH(12)
+        .DATA_WIDTH(SYS_COLS * 8), // 自动计算！(4x4=32bit, 32x32=256bit)
+        .ADDR_WIDTH(4), 
+        .ALMOST_FULL_THRESH(12)
     ) u_out_fifo (
         .clk        (clk),
         .rst_n      (rst_n),
-        .wr_en      (deskewed_valid_out), // Deskew 吐出数据即写入
+        .wr_en      (deskewed_valid_out), 
         .wr_data    (deskewed_data_out),
-        .rd_en      (m_axi_wready && m_axi_wvalid), // AXI 写握手成功即读出
+        .rd_en      (m_axi_wready && m_axi_wvalid), // 【见下文提示】
         .rd_data    (fifo_rd_data),
         .empty      (fifo_empty),
         .full       (fifo_full),
@@ -401,23 +417,42 @@ module npu_axi_wrapper_burst (
     reg [15:0] ox, oy;
     reg [31:0] act_ptr, weight_ptr, bias_ptr, out_ptr;
     
-    reg [2:0]  pack_cnt;         // 用于 4次32位 拼 128位
-    reg [5:0]  weight_cycle_cnt; // 记录配了第几组权重
-    reg [15:0] pixel_cnt;
-    reg [2:0]  ig_cnt; // 记录当前读取到了该像素的第几个通道组
-    reg [15:0] drain_cnt;        // fifo延迟计数器
+    reg [PC_W-1:0] pack_cnt;         // 自动推导位宽的轮询计数器
+    reg [15:0]     pixel_cnt;
+    reg [2:0]      ig_cnt;           
+    reg [15:0]     drain_cnt;        
 
     reg        ar_done, aw_done, w_done;
     reg        first_row_loaded;
 
-// =========================================================
-    // AXI 统一动态读通道配置器 (支持 4KB 保护与量纲复用)
-    // 适用范围：Bias, Weight, Act_Row 任何长短读请求！
+    // =========================================================
+    // 参数化动态 Word 计算器
     // =========================================================
     // Act_Row 一行需要读取的 32-bit word 数：img_w * ic_groups
+
+    wire [7:0] cfg_oc_num = 4;
     wire [15:0] row_word_count = cfg_img_w * {13'd0, lb_cfg_ic_groups};
-    wire [15:0] bias_word_count = 16'd4;
-    wire [15:0] weight_word_count = {10'd0, sa_cfg_weight_num} << 2;
+    
+    // Bias 仅需读取实际的输出通道数 (cfg_oc_num)
+    wire [15:0] bias_word_count = {8'd0, cfg_oc_num};
+    
+    // 权重读取数 = (配的权重组数) * (实际输出通道数)
+    wire [15:0] weight_word_count = sa_cfg_weight_num * {8'd0, cfg_oc_num};
+
+    // =========================================================
+    // 终极武器：参数化权重与 Bias 寻址缓冲区 (代替移位拼接)
+    // =========================================================
+    reg [31:0] sa_weight_buffer [0:SYS_COLS-1];
+    reg [31:0] sa_bias_buffer   [0:SYS_COLS-1];
+
+    genvar i;
+    generate
+        for (i = 0; i < SYS_COLS; i = i + 1) begin : gen_sa_pad
+            // 物理映射：超出配置通道数的部分，硬件自动钳位为 0！
+            assign sa_top_weight_in[i*32 +: 32] = (i < cfg_oc_num) ? sa_weight_buffer[i] : 32'd0;
+            assign acc_bias_in[i*32 +: 32]      = (i < cfg_oc_num) ? sa_bias_buffer[i]   : 32'd0;
+        end
+    endgenerate
 
     // 核心路由 1：MUX 当前指针
     wire [31:0] current_read_ptr = 
@@ -485,7 +520,6 @@ module npu_axi_wrapper_burst (
 
             ox <= 16'd0;
             oy <= 16'd0;
-            weight_cycle_cnt <= 6'd0;
 
             // AXI read channel reset
             m_axi_arvalid <= 1'b0;
@@ -528,10 +562,10 @@ module npu_axi_wrapper_burst (
                         ox <= 16'd0;
                         oy <= 16'd0;
 
-                        pack_cnt         <= 3'd0;
-                        weight_cycle_cnt <= 6'd0;
+                        pack_cnt         <= 0;       // 【修改】自适应位宽清零
                         pixel_cnt        <= 16'd0;
                         ig_cnt           <= 3'd0;
+                        // weight_cycle_cnt 可以彻底删除了，因为有了 weight_words_left
 
                         lb_kernel_kx     <= 2'd0;
                         lb_kernel_ky     <= 2'd0;
@@ -568,11 +602,12 @@ module npu_axi_wrapper_burst (
                         end
                     end
 
-                    // 2. 连续接收 R beat (不再需要 pack_cnt 控制状态转移)
+                    // 2. 连续接收 R beat (数组寻址法)
                     else if (ar_done) begin
                         if (m_axi_rvalid && m_axi_rready) begin
-                            // 移位寄存器接收
-                            acc_bias_in <= {m_axi_rdata, acc_bias_in[127:32]};
+                            // 【参数化升级】：写进 bias 缓冲区
+                            sa_bias_buffer[pack_cnt] <= m_axi_rdata;
+                            pack_cnt <= pack_cnt + 1; // 寻址步进
 
                             // 判断本次物理 Burst 结束
                             if (m_axi_rlast) begin
@@ -583,6 +618,7 @@ module npu_axi_wrapper_burst (
                                 if (bias_words_left == 16'd0) begin
                                     acc_preload_bias <= 1'b1;
                                     weight_words_left<= weight_word_count;
+                                    pack_cnt         <= 0; // 为权重加载状态提前清零
                                     state            <= S_LOAD_WEIGHT;
                                 end
                             end
@@ -615,18 +651,18 @@ module npu_axi_wrapper_burst (
                         end
                     end
 
-                    // 2. 零气泡接收通道
+                    // 2. 零气泡接收通道 (数组寻址 + 动态截断)
                     else if (ar_done) begin
                         if (m_axi_rvalid && m_axi_rready) begin
-                            sa_top_weight_in <= {m_axi_rdata, sa_top_weight_in[127:32]};
+                            // 【参数化升级】：直接写进 pack_cnt 对应的寄存器槽位
+                            sa_weight_buffer[pack_cnt] <= m_axi_rdata;
 
-                            // 【核心防御】：这里绝不受 4KB 物理打断的影响，稳定每 4 拍产生一次拉高脉冲
-                            if (pack_cnt == 3'd3) begin
-                                // m_axi_rready <= 1'b0; // 如果你的 SA 结构需要，可以恢复这里的反压；如果不反压更佳，直接删掉这句。
+                            // 动态截断：读到配置的实际通道数就结束一轮！不再是写死的 3'd3！
+                            if (pack_cnt == cfg_oc_num - 1'b1) begin
                                 sa_weight_en <= 1'b1;
-                                pack_cnt     <= 3'd0;
+                                pack_cnt     <= 0; // 轮询归零，完美无气泡
                             end else begin
-                                pack_cnt     <= pack_cnt + 3'd1;
+                                pack_cnt     <= pack_cnt + 1;
                             end
 
                             if (m_axi_rlast) begin
@@ -636,7 +672,7 @@ module npu_axi_wrapper_burst (
                                 // 同样降维打击：不用数 weight_cycle_cnt 了！
                                 // 只要所有词收完了，就是整层权重加载完毕！
                                 if (weight_words_left == 16'd0) begin
-                                    // pack_cnt         <= 3'd0;
+                                    // pack_cnt         <= 0;
                                     row_words_left   <= row_word_count;
                                     lb_shift_line_en <= 1'b1; // Pad Top
                                     state            <= S_LOAD_ROW;

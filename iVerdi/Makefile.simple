@@ -19,7 +19,7 @@ CASE ?= 1
 SRC_FILES_1 = $(SRC_ROOT)/picorv32.v \
  			  $(SRC_ROOT_NPU)/pe.v \
               $(SRC_ROOT_NPU)/act_skew_buffer.v \
-              $(SRC_ROOT_NPU)/sa_4_4.v \
+              $(SRC_ROOT_NPU)/sa.v \
 			  $(SRC_ROOT_NPU)/npu_bottom_acc.v \
 			  $(SRC_ROOT_NPU)/npu_ppu.v \
 			  $(SRC_ROOT_NPU)/npu_deskew_buffer.v \
