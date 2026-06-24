@@ -11,7 +11,7 @@ module pe #(
     // 0. 动态配置接口
     // ==========================================
     // 当前网络层实际需要循环的权重数量 (例如第一层填 9，第二层填 36)
-    input  wire [5:0]  cfg_weight_num, 
+    input  wire [7:0]  cfg_weight_num, 
 
     // ==========================================
     // 1. 控制与数据驱动令牌 (Tokens)
@@ -45,8 +45,8 @@ module pe #(
     reg signed [7:0] weight_buf [0:MAX_WEIGHTS-1];
     
     // 2. 读写指针完全分离！
-    reg [5:0] wr_weight_idx; // 写指针：由 weight_en 驱动
-    reg [5:0] rd_weight_idx; // 读指针：由 act_valid 驱动
+    reg [7:0] wr_weight_idx; // 写指针：由 weight_en 驱动
+    reg [7:0] rd_weight_idx; // 读指针：由 act_valid 驱动
 
     integer i;
 
@@ -80,8 +80,8 @@ module pe #(
             weight_en_out <= 1'b0;
             weight_out    <= 32'd0;
             
-            wr_weight_idx <= 6'd0; // 写指针复位
-            rd_weight_idx <= 6'd0; // 读指针复位
+            wr_weight_idx <= 8'd0; // 写指针复位
+            rd_weight_idx <= 8'd0; // 读指针复位
             
             for (i = 0; i < MAX_WEIGHTS; i = i + 1) begin
                 weight_buf[i] <= 8'sd0;
@@ -101,18 +101,18 @@ module pe #(
                 
                 // 写指针根据外部配置的动态边界进行环形自增
                 if (wr_weight_idx == cfg_weight_num - 1)
-                    wr_weight_idx <= 6'd0;
+                    wr_weight_idx <= 8'd0;
                 else
-                    wr_weight_idx <= wr_weight_idx + 6'd1;
+                    wr_weight_idx <= wr_weight_idx + 8'd1;
             end 
             
             // --- 3. 数据驱动计算态 (独立控制 读指针) ---
             if (act_valid_in) begin
                 // 读指针同样根据动态边界进行环形自增，与写指针互不干扰！
                 if (rd_weight_idx == cfg_weight_num - 1)
-                    rd_weight_idx <= 6'd0;
+                    rd_weight_idx <= 8'd0;
                 else
-                    rd_weight_idx <= rd_weight_idx + 6'd1;
+                    rd_weight_idx <= rd_weight_idx + 8'd1;
             end
             
             // --- 4. 永不停止的 Psum 瀑布 ---

@@ -11,7 +11,7 @@ module sa #(
     input  wire        rst_n,
 
     // 当前网络层实际需要循环的权重数量 (例如第一层填 9，第二层填 36)
-    input  wire [5:0]  cfg_weight_num, 
+    input  wire [7:0]  cfg_weight_num, 
 
     // --- 全局控制 ---
     input  wire        weight_en, // 1: 配置权重模式; 0: 计算模式
@@ -93,7 +93,9 @@ module sa #(
                 // ----------------------------------------------------
                 // C. 完美例化 PE
                 // ----------------------------------------------------
-                pe u_pe (
+                pe #(
+                    .MAX_WEIGHTS    (144)
+                ) u_pe (
                     .clk            (clk),
                     .rst_n          (rst_n),
                     

@@ -88,7 +88,7 @@ module npu_axi_wrapper_burst #(
     reg [31:0] reg_cfg_img_dim;    // 0x14: [31:16] H, [15:0] W
     reg [31:0] reg_cfg_channels;   // 0x18: [31:16] Out_CH, [15:0] In_CH
     reg [31:0] reg_cfg_quant;      // 0x1C: [31:16] Shift, [15:0] Multiplier
-    reg [31:0] reg_cfg_datapath;   // 0x20: [31:16] out_stride, [15:10] weight_num, [9:4] line_width, [2:0] ic_groups
+    reg [31:0] reg_cfg_datapath;   // 0x20: [31:18] out_stride, [17:10] weight_num, [9:4] line_width, [2:0] ic_groups
 
     // 内部控制信号提取
     wire        npu_start_pulse   = reg_ctrl_status[0]; 
@@ -98,10 +98,10 @@ module npu_axi_wrapper_burst #(
     // 提取配置字段供内部 Datapath 和 FSM 使用
     wire [15:0] cfg_img_h         = reg_cfg_img_dim[31:16];
     wire [15:0] cfg_img_w         = reg_cfg_img_dim[15:0];
-    wire [15:0] out_stride        = reg_cfg_datapath[31:16];
-    wire [5:0]  sa_cfg_weight_num = reg_cfg_datapath[15:10];
+    wire [13:0] out_stride        = reg_cfg_datapath[31:18];
+    wire [7:0]  sa_cfg_weight_num = reg_cfg_datapath[17:10];
     wire [5:0]  lb_cfg_line_width = reg_cfg_datapath[9:4];
-    wire [2:0]  lb_cfg_ic_groups  = reg_cfg_datapath[2:0];
+    wire [3:0]  lb_cfg_ic_groups  = reg_cfg_datapath[3:0];
 
     wire [31:0] current_status = {29'd0, reg_ctrl_status[2], npu_busy, 1'b0};
 
@@ -257,7 +257,7 @@ module npu_axi_wrapper_burst #(
     reg         lb_shift_line_en, lb_pixel_wr_en;
     reg  [5:0]  lb_window_base_x;
     reg  [1:0]  lb_kernel_kx, lb_kernel_ky;
-    reg  [2:0]  lb_read_ic_group;
+    reg  [3:0]  lb_read_ic_group;
     
     // 【参数化】：Line Buffer 吐出的 1D 列向量宽 = 行数 * 8-bit
     wire [SYS_ROWS*8-1:0] lb_window_pixel_out;
@@ -287,7 +287,7 @@ module npu_axi_wrapper_burst #(
     npu_line_buffer #(
         .MAX_LINE_WIDTH(34), 
         .PAD_SIZE(1), 
-        .MAX_DATA_WIDTH(128),     // 若未来扩充更大图像，此参数也可适当放大
+        .MAX_IC_GROUPS(16),     // 若未来扩充更大图像，此参数也可适当放大
         .DATA_WIDTH(SYS_ROWS * 8) // 【核心修改】：自动匹配物理行宽
     ) u_lb (
         .clk              (clk),
@@ -340,7 +340,7 @@ module npu_axi_wrapper_burst #(
     ) u_acc (
         .clk             (clk),
         .rst_n           (rst_n),
-        .cfg_window_size ({2'b0, sa_cfg_weight_num}), // 固定 9 拍一个窗口
+        .cfg_window_size ({sa_cfg_weight_num}), // 固定拍数一个窗口
         .preload_bias    (acc_preload_bias),
         .bottom_valid_in (sa_bottom_valid_out),
         .bias_in         (acc_bias_in),
@@ -431,7 +431,7 @@ module npu_axi_wrapper_burst #(
     // Act_Row 一行需要读取的 32-bit word 数：img_w * ic_groups
 
     wire [7:0] cfg_oc_num = 4;
-    wire [15:0] row_word_count = cfg_img_w * {13'd0, lb_cfg_ic_groups};
+    wire [15:0] row_word_count = cfg_img_w * ({13'd0, lb_cfg_ic_groups } + 1);
     
     // Bias 仅需读取实际的输出通道数 (cfg_oc_num)
     wire [15:0] bias_word_count = {8'd0, cfg_oc_num};
@@ -509,7 +509,7 @@ module npu_axi_wrapper_burst #(
             // 坐标寄存器复位
             lb_kernel_kx     <= 2'd0;
             lb_kernel_ky     <= 2'd0;
-            lb_read_ic_group <= 3'd0;
+            lb_read_ic_group <= 4'd0;
 
             ig_cnt         <= 3'd0;
             pack_cnt       <= 3'd0;
@@ -569,7 +569,7 @@ module npu_axi_wrapper_burst #(
 
                         lb_kernel_kx     <= 2'd0;
                         lb_kernel_ky     <= 2'd0;
-                        lb_read_ic_group <= 3'd0;
+                        lb_read_ic_group <= 4'd0;
 
                         bias_words_left  <= bias_word_count;
                         
@@ -735,7 +735,7 @@ module npu_axi_wrapper_burst #(
                                         lb_window_base_x <= ox[5:0];
                                         lb_kernel_kx     <= 2'd0;
                                         lb_kernel_ky     <= 2'd0;
-                                        lb_read_ic_group <= 3'd0;
+                                        lb_read_ic_group <= 4'd0;
 
                                         if (!fifo_almost_full) begin
                                             act_valid_in <= 1'b1;
@@ -774,16 +774,16 @@ module npu_axi_wrapper_burst #(
                         lb_kernel_kx <= 2'd0;
                         if (lb_kernel_ky == 2'd2) begin
                             lb_kernel_ky <= 2'd0;
-                            if (lb_read_ic_group == lb_cfg_ic_groups - 1) begin
+                            if (lb_read_ic_group == lb_cfg_ic_groups) begin
                                 // 三层循环全部结束！进入排空态
-                                lb_read_ic_group <= 3'd0;
+                                lb_read_ic_group <= 4'd0;
                                 // 【核心修复 2】：为下一拍提前撤销令牌！
                                 act_valid_in <= 1'b0; 
                                 
                                 // 【神级跳转】：再也不等了！直接去更新坐标！
                                 state <= S_UPDATE_WINDOW;
                             end else begin
-                                lb_read_ic_group <= lb_read_ic_group + 3'd1;
+                                lb_read_ic_group <= lb_read_ic_group + 4'd1;
                             end
                         end else begin
                             lb_kernel_ky <= lb_kernel_ky + 2'd1;
@@ -829,7 +829,7 @@ module npu_axi_wrapper_burst #(
                             // 初始化下一轮的 3D 嵌套坐标！& 提前配置权重有效信号
                             lb_kernel_kx     <= 2'd0;
                             lb_kernel_ky     <= 2'd0;
-                            lb_read_ic_group <= 3'd0;                
+                            lb_read_ic_group <= 4'd0;                
                             // 【Fast-Path 优化 2】
                             if (!fifo_almost_full) begin
                                 act_valid_in <= 1'b1;
@@ -851,7 +851,7 @@ module npu_axi_wrapper_burst #(
                         // 初始化下一轮的 3D 嵌套坐标！& 提前配置权重有效信号
                         lb_kernel_kx     <= 2'd0;
                         lb_kernel_ky     <= 2'd0;
-                        lb_read_ic_group <= 3'd0;
+                        lb_read_ic_group <= 4'd0;
                         
                         // 【Fast-Path 优化 3】
                         if (!fifo_almost_full) begin
