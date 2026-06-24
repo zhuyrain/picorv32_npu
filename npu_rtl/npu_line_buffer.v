@@ -38,10 +38,12 @@ module npu_line_buffer #(
     
     // -----------------------------------------------------------
     // 核心物理存储：按最大规格铺设 (128-bit * 34)
+    // lb_3 用于提前异步搬运输入数据
     // -----------------------------------------------------------
     reg [MAX_DATA_WIDTH-1:0] lb_0 [0 : MAX_LINE_WIDTH-1]; // Row 0 (最老的一行)
     reg [MAX_DATA_WIDTH-1:0] lb_1 [0 : MAX_LINE_WIDTH-1]; 
     reg [MAX_DATA_WIDTH-1:0] lb_2 [0 : MAX_LINE_WIDTH-1]; // Row 2 (最新读入的一行)
+    reg [MAX_DATA_WIDTH-1:0] lb_3 [0 : MAX_LINE_WIDTH-1]; // Row 3 (异步搬运的一行)
 
     // 内部写指针：X 坐标指针
     reg [5:0] wr_ptr;
@@ -60,6 +62,7 @@ module npu_line_buffer #(
                 lb_0[i] <= 0;
                 lb_1[i] <= 0;
                 lb_2[i] <= 0;
+                lb_3[i] <= 0;
             end
             wr_ptr    <= PAD_SIZE; // 初始写指针跳过左侧 Padding 区域
             wr_ig_cnt <= 4'd0;
@@ -71,7 +74,8 @@ module npu_line_buffer #(
                     if (i < cfg_line_width) begin
                         lb_0[i] <= lb_1[i];
                         lb_1[i] <= lb_2[i];
-                        lb_2[i] <= {MAX_DATA_WIDTH{1'b0}}; // 动态产生底部 Padding
+                        lb_2[i] <= lb_3[i];
+                        lb_3[i] <= {MAX_DATA_WIDTH{1'b0}}; // 动态产生底部 Padding
                     end
                 end
                 // 写指针复位到有效区域起点 (1)
@@ -87,7 +91,7 @@ module npu_line_buffer #(
                     //     3'd2: lb_2[wr_ptr][ 95: 64] <= pixel_wr_data;
                     //     3'd3: lb_2[wr_ptr][127: 96] <= pixel_wr_data;
                     // endcase
-                    lb_2[wr_ptr][wr_ig_cnt * 32 +: 32] <= pixel_wr_data;
+                    lb_3[wr_ptr][wr_ig_cnt * 32 +: 32] <= pixel_wr_data;
                     // 分组计数器与 X 坐标递增逻辑
                     if (wr_ig_cnt == cfg_ic_groups) begin
                         // 这一整个超级像素（比如16通道）的切片全部凑齐了！指针右移一格
@@ -109,7 +113,7 @@ module npu_line_buffer #(
     wire [5:0] read_idx = window_base_x + kernel_kx;
     reg [MAX_DATA_WIDTH-1:0] full_pixel;
 
-    // 1. 抽出完整的 128-bit 超级像素
+    // 1. 抽出完整的 MAX_DATA_WIDTH-bit 超级像素
     always @(*) begin
         case (kernel_ky)
             2'd0: full_pixel = lb_0[read_idx];

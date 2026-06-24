@@ -42,16 +42,16 @@ module npu_axi_wrapper_burst #(
     //    用于直连 axi_dp_sram_hybrid 的 Port B
     // ==========================================
     // Read address channel
-    output reg          m_axi_arvalid,
+    output wire         m_axi_arvalid,
     input  wire         m_axi_arready,
-    output reg  [31:0]  m_axi_araddr,
-    output reg  [ 7:0]  m_axi_arlen,
-    output reg  [ 2:0]  m_axi_arsize,
-    output reg  [ 1:0]  m_axi_arburst,
+    output wire [31:0]  m_axi_araddr,
+    output wire [ 7:0]  m_axi_arlen,
+    output wire [ 2:0]  m_axi_arsize,
+    output wire [ 1:0]  m_axi_arburst,
 
     // Read data channel
     input  wire         m_axi_rvalid,
-    output reg          m_axi_rready,
+    output wire         m_axi_rready,
     input  wire [31:0]  m_axi_rdata,
     input  wire [ 1:0]  m_axi_rresp,
     input  wire         m_axi_rlast,
@@ -415,7 +415,7 @@ module npu_axi_wrapper_burst #(
 
     reg [3:0] state;
     reg [15:0] ox, oy;
-    reg [31:0] act_ptr, weight_ptr, bias_ptr, out_ptr;
+    reg [31:0] pf_act_ptr, weight_ptr, bias_ptr, out_ptr;
     
     reg [PC_W-1:0] pack_cnt;         // 自动推导位宽的轮询计数器
     reg [15:0]     pixel_cnt;
@@ -454,18 +454,49 @@ module npu_axi_wrapper_burst #(
         end
     endgenerate
 
-    // 核心路由 1：MUX 当前指针
+    // ==========================================
+    // 虚拟通道分离与 MUX 仲裁
+    // ==========================================
+    reg        master_arvalid;
+    reg [31:0] master_araddr;
+    reg [7:0]  master_arlen;
+    reg        master_rready;
+    reg [2:0]  master_arsize;
+    reg [1:0]  master_arburst;
+
+    reg        pf_arvalid;
+    reg [31:0] pf_araddr;
+    reg [7:0]  pf_arlen;
+    reg        pf_rready;
+    reg [2:0]  pf_arsize;
+    reg [1:0]  pf_arburst;
+
+    reg        bus_owner_is_pf; // 0=Master管(Bias/Weight), 1=Prefetch管(Act)
+
+    // 物理总线驱动 (组合逻辑瞬间切换，0 延迟)
+    assign m_axi_arvalid = bus_owner_is_pf ? pf_arvalid : master_arvalid;
+    assign m_axi_araddr  = bus_owner_is_pf ? pf_araddr  : master_araddr;
+    assign m_axi_arlen   = bus_owner_is_pf ? pf_arlen   : master_arlen;
+    assign m_axi_rready  = bus_owner_is_pf ? pf_rready  : master_rready;
+    assign m_axi_arsize  = bus_owner_is_pf ? pf_arsize  : master_arsize;  // 4 bytes / beat
+    assign m_axi_arburst = bus_owner_is_pf ? pf_arburst : master_arburst; // INCR
+
+    // =========================================================
+    // 动态 4KB 切片计算器 (支持总线仲裁路由)
+    // =========================================================
+    // 核心路由 1：MUX 当前指针 (加入了 bus_owner_is_pf 判断)
     wire [31:0] current_read_ptr = 
+        (bus_owner_is_pf)        ? pf_act_ptr : 
         (state == S_LOAD_BIAS)   ? bias_ptr :
-        (state == S_LOAD_WEIGHT) ? weight_ptr :
-        (state == S_LOAD_ROW)    ? act_ptr : 32'd0;
+        (state == S_LOAD_WEIGHT) ? weight_ptr : 32'd0;
 
     // 核心路由 2：MUX 当前剩余量
     wire [15:0] current_words_left = 
+        (bus_owner_is_pf)        ? pf_row_words_left :
         (state == S_LOAD_BIAS)   ? bias_words_left :
-        (state == S_LOAD_WEIGHT) ? weight_words_left :
-        (state == S_LOAD_ROW)    ? row_words_left : 16'd0;
+        (state == S_LOAD_WEIGHT) ? weight_words_left : 16'd0;
 
+    // (剩下的 words_to_4kb_boundary, safe_burst_cap_words, safe_arlen 保持完全不变)
     // 1. 计算当前指针距离下一个 4KB 边界还有多少个 32-bit Word
     // 假设指针 4-byte 对齐。1024 个 words 等于 4KB。
     wire [15:0] words_to_4kb_boundary =
@@ -486,7 +517,7 @@ module npu_axi_wrapper_burst #(
     // 独立的三组剩余量寄存器
     reg [15:0] bias_words_left;
     reg [15:0] weight_words_left;
-    reg [15:0] row_words_left;
+    reg [15:0] pf_row_words_left;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -502,8 +533,6 @@ module npu_axi_wrapper_burst #(
             act_valid_in     <= 1'b0;
             sa_weight_en     <= 1'b0;
             lb_shift_line_en <= 1'b0;
-            lb_pixel_wr_en   <= 1'b0;
-            lb_pixel_wr_data_reg <= 32'd0;
             acc_preload_bias <= 1'b0;
 
             // 坐标寄存器复位
@@ -515,19 +544,20 @@ module npu_axi_wrapper_burst #(
             pack_cnt       <= 3'd0;
             pixel_cnt      <= 16'd0;
             drain_cnt      <= 16'd0;
-            row_words_left <= 16'd0;
             bias_words_left<= 16'd0;
 
             ox <= 16'd0;
             oy <= 16'd0;
 
+            bus_owner_is_pf <= 1'b0; // 初始化时，权柄在 Master 手里
+            req_load_row <= 1'b0; // 初始化
             // AXI read channel reset
-            m_axi_arvalid <= 1'b0;
-            m_axi_araddr  <= 32'd0;
-            m_axi_arlen   <= 8'd0;
-            m_axi_arsize  <= 3'd0;
-            m_axi_arburst <= 2'b00;
-            m_axi_rready  <= 1'b0;
+            master_arvalid <= 1'b0;
+            master_araddr  <= 32'd0;
+            master_arlen   <= 8'd0;
+            master_arsize  <= 3'd0;
+            master_arburst <= 2'b00;
+            master_rready  <= 1'b0;
         end else begin
             npu_done_pulse <= 0; // 默认清零脉冲
 
@@ -541,15 +571,13 @@ module npu_axi_wrapper_burst #(
 
                     first_row_loaded <= 1'b0;
                     lb_shift_line_en <= 1'b0;
-                    lb_pixel_wr_en   <= 1'b0;
                     act_valid_in     <= 1'b0;
                     sa_weight_en     <= 1'b0;
                     acc_preload_bias <= 1'b0;
 
-                    m_axi_arvalid <= 1'b0;
-                    m_axi_rready  <= 1'b0;
+                    master_arvalid <= 1'b0;
+                    master_rready  <= 1'b0;
 
-                    row_words_left <= 16'd0;
                     bias_words_left<= 16'd0;
                     weight_words_left <= 16'd0;
                     if (npu_start_pulse) begin
@@ -572,46 +600,44 @@ module npu_axi_wrapper_burst #(
                         lb_read_ic_group <= 4'd0;
 
                         bias_words_left  <= bias_word_count;
-                        
+
                         state <= S_LOAD_BIAS;
                     end
                 end
 
                 S_LOAD_BIAS: begin
                     acc_preload_bias <= 1'b0;
-                    lb_pixel_wr_en   <= 1'b0;
-                    lb_shift_line_en <= 1'b0;
 
                     // 1. 发起带 4KB 保护的长突发请求
                     if (!ar_done && bias_words_left != 16'd0) begin
                         // 按照要求：将握手清零逻辑写在上面
-                        if (m_axi_arvalid && m_axi_arready) begin
-                            m_axi_arvalid   <= 1'b0;
-                            m_axi_rready    <= 1'b1;
+                        if (master_arvalid && m_axi_arready) begin
+                            master_arvalid   <= 1'b0;
+                            master_rready    <= 1'b1;
                             ar_done         <= 1'b1;
                             
                             // 发号施令瞬间结算！（注意乘法优先级括号）
                             bias_ptr        <= bias_ptr + ( ({24'd0, safe_arlen} + 32'd1) << 2 );
                             bias_words_left <= bias_words_left - ({8'd0, safe_arlen} + 16'd1);
                         end else begin
-                            m_axi_arvalid <= 1'b1;
-                            m_axi_araddr  <= current_read_ptr;  // 完美复用路由 MUX
-                            m_axi_arlen   <= safe_arlen;        // 完美复用动态裁决
-                            m_axi_arsize  <= 3'd2;              // 4 bytes / beat
-                            m_axi_arburst <= 2'b01;             // INCR
+                            master_arvalid <= 1'b1;
+                            master_araddr  <= current_read_ptr;  // 完美复用路由 MUX
+                            master_arlen   <= safe_arlen;        // 完美复用动态裁决
+                            master_arsize  <= 3'd2;              // 4 bytes / beat
+                            master_arburst <= 2'b01;             // INCR
                         end
                     end
 
                     // 2. 连续接收 R beat (数组寻址法)
                     else if (ar_done) begin
-                        if (m_axi_rvalid && m_axi_rready) begin
+                        if (m_axi_rvalid && master_rready) begin
                             // 【参数化升级】：写进 bias 缓冲区
                             sa_bias_buffer[pack_cnt] <= m_axi_rdata;
                             pack_cnt <= pack_cnt + 1; // 寻址步进
 
                             // 判断本次物理 Burst 结束
                             if (m_axi_rlast) begin
-                                m_axi_rready <= 1'b0;
+                                master_rready <= 1'b0;
                                 ar_done      <= 1'b0;
 
                                 // 降维打击裁决：无论被 4KB 切成多少段，只看最后剩余量！
@@ -629,31 +655,29 @@ module npu_axi_wrapper_burst #(
                 S_LOAD_WEIGHT: begin
                     acc_preload_bias <= 1'b0;
                     sa_weight_en     <= 1'b0; // 默认拉低脉冲
-                    lb_pixel_wr_en   <= 1'b0;
-                    lb_shift_line_en <= 1'b0;
 
                     // 1. 发起带 4KB 保护的长突发流式请求
                     if (!ar_done && weight_words_left != 16'd0) begin
-                        if (m_axi_arvalid && m_axi_arready) begin
-                            m_axi_arvalid     <= 1'b0;
-                            m_axi_rready      <= 1'b1;
+                        if (master_arvalid && m_axi_arready) begin
+                            master_arvalid     <= 1'b0;
+                            master_rready      <= 1'b1;
                             ar_done           <= 1'b1;
                             
                             // 瞬间结算！
                             weight_ptr        <= weight_ptr + ( ({24'd0, safe_arlen} + 32'd1) << 2 );
                             weight_words_left <= weight_words_left - ({8'd0, safe_arlen} + 16'd1);
                         end else begin
-                            m_axi_arvalid <= 1'b1;
-                            m_axi_araddr  <= current_read_ptr;  // 完美复用路由 MUX
-                            m_axi_arlen   <= safe_arlen;        // 完美复用动态裁决
-                            m_axi_arsize  <= 3'd2;              // 4 bytes / beat
-                            m_axi_arburst <= 2'b01;             // INCR
+                            master_arvalid <= 1'b1;
+                            master_araddr  <= current_read_ptr;  // 完美复用路由 MUX
+                            master_arlen   <= safe_arlen;        // 完美复用动态裁决
+                            master_arsize  <= 3'd2;              // 4 bytes / beat
+                            master_arburst <= 2'b01;             // INCR
                         end
                     end
 
                     // 2. 零气泡接收通道 (数组寻址 + 动态截断)
                     else if (ar_done) begin
-                        if (m_axi_rvalid && m_axi_rready) begin
+                        if (m_axi_rvalid && master_rready) begin
                             // 【参数化升级】：直接写进 pack_cnt 对应的寄存器槽位
                             sa_weight_buffer[pack_cnt] <= m_axi_rdata;
 
@@ -666,106 +690,45 @@ module npu_axi_wrapper_burst #(
                             end
 
                             if (m_axi_rlast) begin
-                                m_axi_rready <= 1'b0;
+                                master_rready <= 1'b0;
                                 ar_done      <= 1'b0;
 
                                 // 同样降维打击：不用数 weight_cycle_cnt 了！
                                 // 只要所有词收完了，就是整层权重加载完毕！
                                 if (weight_words_left == 16'd0) begin
                                     // pack_cnt         <= 0;
-                                    row_words_left   <= row_word_count;
                                     lb_shift_line_en <= 1'b1; // Pad Top
-                                    state            <= S_LOAD_ROW;
+                                    // 【交接总线权柄给预取】
+                                    bus_owner_is_pf  <= 1'b1;
+                                    // 扣动扳机，让预取机去读第一行
+                                    req_load_row     <= ~req_load_row; 
+                                    state            <= S_WAIT_ROW;
                                 end
                             end
                         end
                     end
                 end
 
-                S_LOAD_ROW: begin
-                    sa_weight_en     <= 1'b0;
+                S_WAIT_ROW: begin
                     lb_shift_line_en <= 1'b0;
-                    lb_pixel_wr_en   <= 1'b0;
-
-                    // ----------------------------------------------------------
-                    // 1. AR 请求阶段：完美契约，一次性扣除！
-                    // ----------------------------------------------------------
-                    if (!ar_done && row_words_left != 16'd0) begin
-                        if (m_axi_arvalid && m_axi_arready) begin
-                            m_axi_arvalid  <= 1'b0;
-                            m_axi_rready   <= 1'b1;
-                            ar_done        <= 1'b1;
-                            
-                            // 发号施令的瞬间，指针和剩余量直接结算！
-                            act_ptr        <= act_ptr + ( ({24'd0, safe_arlen} + 32'd1) << 2 );
-                            row_words_left <= row_words_left - ({8'd0, safe_arlen} + 16'd1);
+                    // 【核心检票】：只看预取小弟干完没有
+                    if (req_load_row == ack_load_row) begin
+                        if (!first_row_loaded) begin
+                            first_row_loaded <= 1'b1;
+                            lb_shift_line_en <= 1'b1;
+                            req_load_row <= ~req_load_row;
+                        end
+                        // 此时可以直接再抠一次扳机，让小弟去预取下一行 (只要还没到图像底部)
+                        else if (oy < cfg_img_h - 2) begin
+                            req_load_row <= ~req_load_row;
+                            state <= S_COMPUTE; // 开始算命！
                         end else begin
-                            m_axi_arvalid <= 1'b1;
-                            m_axi_araddr  <= act_ptr;
-                            m_axi_arlen   <= safe_arlen;
-                            m_axi_arsize  <= 3'd2;
-                            m_axi_arburst <= 2'b01;
+                            state <= S_COMPUTE; // 开始算命！
                         end
                     end
-
-                    // ----------------------------------------------------------
-                    // 2. R 接收阶段：无脑泄洪，只看 RLAST 时的“先知”裁决！
-                    // ----------------------------------------------------------
-                    else if (ar_done) begin
-                        if (m_axi_rvalid && m_axi_rready) begin
-                            // 数据无脑延迟一拍拍进 Line Buffer
-                            lb_pixel_wr_data_reg <= m_axi_rdata;
-                            lb_pixel_wr_en       <= 1'b1;
-
-                            if (m_axi_rlast) begin
-                                m_axi_rready <= 1'b0;
-                                ar_done      <= 1'b0;
-
-                                // 【终极降维打击】：怎么判断这一行结束了？
-                                // 因为 row_words_left 在 AR 阶段就被提前扣减了。
-                                // 如果当前收到的这笔 Burst 的 RLAST 到来，且 row_words_left 为 0，
-                                // 说明这就是本行的最后一笔 Burst 的最后一个数据！一行结束！
-                                if (row_words_left == 16'd0) begin
-                                    
-                                    if (oy == 16'd0 && !first_row_loaded) begin
-                                        first_row_loaded <= 1'b1;
-                                        row_words_left   <= row_word_count; // 为 Shift Line 初始化下一行
-                                        state            <= S_SHIFT_LINE_INIT;
-                                    end else begin
-                                        lb_window_base_x <= ox[5:0];
-                                        lb_kernel_kx     <= 2'd0;
-                                        lb_kernel_ky     <= 2'd0;
-                                        lb_read_ic_group <= 4'd0;
-
-                                        if (!fifo_almost_full) begin
-                                            act_valid_in <= 1'b1;
-                                            state        <= S_COMPUTE;
-                                        end else begin
-                                            act_valid_in <= 1'b0;
-                                            state        <= S_WAIT_FIFO;
-                                        end
-                                    end
-                                end
-                                // 如果 row_words_left != 0，什么都不用做！
-                                // ar_done 变低后，下一拍状态机会自动发起下一次 AR 续传！
-                            end
-                        end
-                    end
-                end
-
-                S_SHIFT_LINE_INIT: begin
-                    lb_pixel_wr_en   <= 1'b0;
-                    lb_shift_line_en <= 1'b1;
-
-                    pixel_cnt      <= 16'd0;
-                    ig_cnt         <= 3'd0;
-                    row_words_left <= row_word_count;
-
-                    state <= S_LOAD_ROW;
                 end
 
                 S_COMPUTE: begin
-                    lb_pixel_wr_en <= 0;
                     lb_shift_line_en <= 1'b0; // 【终极修复】：确保滚动只发生一拍！
                     
                     // 【神级重构】：极其优雅的三维嵌套进位计数器！(Look-ahead)
@@ -797,7 +760,6 @@ module npu_axi_wrapper_burst #(
                 // 【发车等待区】：只有在被 Fast-Path 拦截时才进来休息
                 // ==========================================
                 S_WAIT_FIFO: begin
-                    lb_pixel_wr_en <= 0;      // 停止写像素
                     lb_shift_line_en <= 1'b0; // 确保滚动只发生一拍
                     
                     if (!fifo_almost_full) begin
@@ -821,28 +783,27 @@ module npu_axi_wrapper_burst #(
                             // 【核心修复】：为排空态准备计数器！
                             drain_cnt <= 0;
                             state <= S_WAIT_ALL_DONE; 
-                        end else if (oy == cfg_img_h - 2) begin
-                            // 完美 Bottom Pad!
-                            lb_shift_line_en <= 1'b1; 
-                            lb_window_base_x <= 6'd0;
-
-                            // 初始化下一轮的 3D 嵌套坐标！& 提前配置权重有效信号
-                            lb_kernel_kx     <= 2'd0;
-                            lb_kernel_ky     <= 2'd0;
-                            lb_read_ic_group <= 4'd0;                
-                            // 【Fast-Path 优化 2】
-                            if (!fifo_almost_full) begin
-                                act_valid_in <= 1'b1;
-                                state <= S_COMPUTE;
-                            end else begin
-                                state <= S_WAIT_FIFO;
-                            end
                         end else begin
-                            lb_shift_line_en <= 1'b1;
-                            pixel_cnt        <= 16'd0;
-                            ig_cnt           <= 3'd0;
-                            row_words_left   <= row_word_count;
-                            state            <= S_LOAD_ROW;
+                            // 先Pad!
+                                lb_shift_line_en <= 1'b1; 
+                                lb_window_base_x <= 6'd0;
+
+                                // 初始化下一轮的 3D 嵌套坐标！& 提前配置权重有效信号
+                                lb_kernel_kx     <= 2'd0;
+                                lb_kernel_ky     <= 2'd0;
+                                lb_read_ic_group <= 4'd0;                
+                            if ((req_load_row == ack_load_row) || (oy == cfg_img_h - 2)) begin
+                                // 【Fast-Path 优化 2】
+                                if (!fifo_almost_full) begin
+                                    act_valid_in <= 1'b1;
+                                    state <= S_COMPUTE;
+                                end else begin
+                                    state <= S_WAIT_FIFO;
+                                end
+                            end else begin
+                            // 如果没等于，说明总线卡了，被迫等待
+                                state <= S_WAIT_ROW;
+                            end
                         end
                     end else begin
                         ox <= ox + 1;
@@ -987,6 +948,98 @@ module npu_axi_wrapper_burst #(
 
                     default: begin
                         wr_state <= 2'd0;
+                    end
+                endcase
+            end
+        end
+    end
+
+    // ==========================================
+    // 异步预取机制的握手信号
+    // ==========================================
+    reg req_load_row;  // 主状态机发出请求 (翻转即请求)
+    reg ack_load_row;  // 预取状态机回应   (追平即完成)
+
+    // 预取状态机定义
+    localparam PF_IDLE = 2'd0;
+    localparam PF_AR   = 2'd1;
+    localparam PF_R    = 2'd2;
+    reg [1:0] pf_state;
+
+    // =========================================================
+    // [模块 5]: 独立运行的 AXI 激活行读取状态机 (ASYNC READ FSM)
+    // =========================================================
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pf_state             <= PF_IDLE;
+            ack_load_row         <= 1'b0;
+            lb_pixel_wr_data_reg <= 32'd0;
+            pf_act_ptr           <= 32'd0;
+            pf_row_words_left    <= 16'd0;
+            lb_pixel_wr_en       <= 1'b0;
+
+            // 预取机专用的 AXI 寄存器复位
+            pf_arvalid <= 1'b0;
+            pf_araddr  <= 32'd0;
+            pf_arlen   <= 8'd0;
+            pf_rready  <= 1'b0;
+            pf_arburst <= 2'b00;
+            pf_arsize  <= 3'd0;
+        end else begin
+            lb_pixel_wr_en <= 1'b0; // 默认拉低脉冲
+            
+            if (npu_start_pulse) begin
+                pf_act_ptr   <= reg_act_base;
+                ack_load_row <= req_load_row; // 强制对齐
+                pf_state     <= PF_IDLE;
+                
+                pf_arvalid <= 1'b0;
+                pf_rready  <= 1'b0;
+            end else begin
+                case (pf_state)
+                    PF_IDLE: begin
+                        if (req_load_row != ack_load_row) begin
+                            pf_row_words_left <= row_word_count; 
+                            pf_state          <= PF_AR;
+                        end
+                    end
+
+                    PF_AR: begin
+                        // 发起请求并扣除指针 (注意：用真实的 m_axi_arready 握手)
+                        if (pf_arvalid && m_axi_arready) begin
+                            pf_arvalid <= 1'b0;
+                            pf_rready  <= 1'b1;  // 握手成功后，立刻打开接收阀门
+                            pf_state   <= PF_R;
+                            
+                            // 结算剩余量
+                            pf_act_ptr        <= pf_act_ptr + ( ({24'd0, safe_arlen} + 32'd1) << 2 );
+                            pf_row_words_left <= pf_row_words_left - ({8'd0, safe_arlen} + 16'd1);
+                        end else begin
+                            pf_arvalid <= 1'b1;
+                            pf_araddr  <= pf_act_ptr;
+                            pf_arlen   <= safe_arlen;
+                            pf_arsize  <= 3'd2;              // 4 bytes / beat
+                            pf_arburst <= 2'b01;             // INCR
+                        end
+                    end
+
+                    PF_R: begin
+                        // 接收数据逻辑
+                        if (m_axi_rvalid && pf_rready) begin
+                            lb_pixel_wr_data_reg <= m_axi_rdata;
+                            lb_pixel_wr_en       <= 1'b1;
+
+                            if (m_axi_rlast) begin
+                                pf_rready <= 1'b0; // 【核心修复】：物理 Burst 结束，必须关闭阀门！
+
+                                if (pf_row_words_left == 0) begin
+                                    ack_load_row <= ~ack_load_row; 
+                                    pf_state     <= PF_IDLE;
+                                end else begin
+                                    pf_state     <= PF_AR;
+                                end
+                            end
+                        end
                     end
                 endcase
             end
