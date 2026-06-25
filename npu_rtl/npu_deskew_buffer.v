@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-// 反偏斜缓存：将梯次到达的 4 列 8-bit 数据，在同一拍完美对齐为 32-bit 输出
+// 反偏斜缓存：将梯次到达的 N 列 8-bit 数据，在同一拍完美对齐为 (N*8)-bit 输出
 module npu_deskew_buffer #(
     parameter COLS = 4,
     parameter DATA_WIDTH = 8
@@ -14,58 +14,52 @@ module npu_deskew_buffer #(
 
     // 对齐后输出给 AXI DMA
     output wire [(COLS*DATA_WIDTH)-1:0]       deskewed_data_out,
-    output wire                               deskewed_valid_out // 对齐时刻的唯一发令枪！
+    output wire                               deskewed_valid_out 
 );
 
-    // Col 0: 需要延迟 3 拍
-    reg [DATA_WIDTH-1:0] col0_d1, col0_d2, col0_d3;
-    // reg                  val0_d1, val0_d2, val0_d3;
+    genvar c;
+    generate
+        for (c = 0; c < COLS; c = c + 1) begin : COL_DESKEW
+            
+            // 提取当前列的数据
+            wire [DATA_WIDTH-1:0] col_in = ppu_data_in[c*DATA_WIDTH +: DATA_WIDTH];
+            
+            // 自动推导当前列的反偏斜延迟深度
+            // 第 0 列最先出来，需要等待最久 (COLS-1 拍)
+            // 最后一列最后出来，等待时间为 0
+            localparam DELAY = COLS - 1 - c; 
 
-    // Col 1: 需要延迟 2 拍
-    reg [DATA_WIDTH-1:0] col1_d1, col1_d2;
-    // reg                  val1_d1, val1_d2;
+            if (DELAY == 0) begin : DELAY_0
+                // 最后一列：0 延迟透传
+                assign deskewed_data_out[c*DATA_WIDTH +: DATA_WIDTH] = col_in;
+            end else begin : DELAY_N
+                // 前 N-1 列：生成深度为 DELAY 的移位寄存器链
+                reg [DATA_WIDTH-1:0] delay_pipe [0 : DELAY-1];
+                integer i;
 
-    // Col 2: 需要延迟 1 拍
-    reg [DATA_WIDTH-1:0] col2_d1;
-    // reg                  val2_d1;
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            col0_d1 <= 0; col0_d2 <= 0; col0_d3 <= 0;
-            col1_d1 <= 0; col1_d2 <= 0;
-            col2_d1 <= 0;
-        end else begin //由于确定时序+只用了最慢的那个有效信号，故不寄存其余有效信号
-            // Col 0 移位链 (进 3 退 0)
-            col0_d1 <= ppu_data_in[0+:DATA_WIDTH];   
-            col0_d2 <= col0_d1;            
-            col0_d3 <= col0_d2;            
-            // val0_d1 <= ppu_valid_in[0];
-            // val0_d2 <= val0_d1;
-            // val0_d3 <= val0_d2;
-            // Col 1 移位链 (进 2 退 0)
-            col1_d1 <= ppu_data_in[DATA_WIDTH+:DATA_WIDTH];  
-            col1_d2 <= col1_d1;            
-            // val1_d1 <= ppu_valid_in[1];
-            // val1_d2 <= val1_d1;
-            // Col 2 移位链 (进 1 退 0)
-            col2_d1 <= ppu_data_in[2*DATA_WIDTH+:DATA_WIDTH]; 
-            // val2_d1 <= ppu_valid_in[2];
+                always @(posedge clk or negedge rst_n) begin
+                    if (!rst_n) begin
+                        for (i = 0; i < DELAY; i = i + 1) begin
+                            delay_pipe[i] <= {DATA_WIDTH{1'b0}};
+                        end
+                    end else begin
+                        // 第 0 级吃入当前数据
+                        delay_pipe[0] <= col_in;
+                        
+                        // 后续级移位传递
+                        for (i = 1; i < DELAY; i = i + 1) begin
+                            delay_pipe[i] <= delay_pipe[i-1];
+                        end
+                    end
+                end
+                
+                // 最后一级输出拼接
+                assign deskewed_data_out[c*DATA_WIDTH +: DATA_WIDTH] = delay_pipe[DELAY-1];
+            end
         end
-    end
+    endgenerate
 
-    // ==========================================
-    // 见证奇迹的汇师时刻！
-    // ==========================================
-    // 数据完美拼接：Col3 是实时数据，其余是延迟后的历史数据
-    assign deskewed_data_out = {
-        ppu_data_in[31:24], // Col 3 (0 延迟透传)
-        col2_d1,            // Col 2 (延迟 1 拍)
-        col1_d2,            // Col 1 (延迟 2 拍)
-        col0_d3             // Col 0 (延迟 3 拍)
-    };
-
-    // 只要 Col 3 (最后到达的列) 的有效信号拉高，意味着前三列的历史数据刚好在这一拍对齐！
-    // AXI 写状态机只需要听这一个信号，就能直接抓取完整的 32-bit 写回 SRAM！
-    assign deskewed_valid_out = ppu_valid_in[3];
+    // 见证奇迹的汇师时刻：只要最后一列的 valid 拉高，所有历史数据必将对齐！
+    assign deskewed_valid_out = ppu_valid_in[COLS-1];
 
 endmodule
