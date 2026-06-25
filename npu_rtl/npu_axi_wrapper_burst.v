@@ -401,8 +401,8 @@ module npu_axi_wrapper_burst #(
 
     npu_sync_fifo #(
         .DATA_WIDTH(SYS_COLS * 8), // 自动计算！(4x4=32bit, 32x32=256bit)
-        .ADDR_WIDTH(5), 
-        .ALMOST_FULL_THRESH(16)
+        .ADDR_WIDTH(6), 
+        .ALMOST_FULL_THRESH(32)
     ) u_out_fifo (
         .clk        (clk),
         .rst_n      (rst_n),
@@ -708,7 +708,7 @@ module npu_axi_wrapper_burst #(
                             // 动态截断：读到配置的实际通道数就结束一轮！不再是写死的 3'd3！
                             if (pack_cnt == cfg_oc_num - 1'b1) begin
                                 sa_weight_en <= 1'b1;
-                                if ( weight_row_group_cnt == (SYS_ROWS - 1)/4) begin
+                                if ( weight_row_group_cnt == lb_cfg_ic_groups) begin
                                     weight_row_group_cnt <= 0;
                                 end else begin
                                     weight_row_group_cnt <= weight_row_group_cnt + 1;

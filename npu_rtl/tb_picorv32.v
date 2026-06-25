@@ -298,8 +298,8 @@ module tb_picorv32;
     // 6. 例化 NPU 异构加速子系统
     // =========================================================================
     npu_axi_wrapper_burst #(
-        .SYS_ROWS(4), 
-        .SYS_COLS(4)
+        .SYS_ROWS(64), 
+        .SYS_COLS(64)
     ) u_npu_wrapper (
         .clk            (clk), 
         .rst_n          (resetn),

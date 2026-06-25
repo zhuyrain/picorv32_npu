@@ -110,7 +110,7 @@ module sa #(
                 pe #(
                     // 现在的 PE 不需要存 144 个了！它只需要存属于自己的 9 个权重！
                     // 为了保证兼容性，你也可以先留一个安全大小，比如 36
-                    .MAX_WEIGHTS    (144),
+                    .MAX_WEIGHTS    (36),
                     // 将计算好的本行专属 Group 号作为参数传入 PE
                     .MY_GROUP       (MY_WEIGHT_GROUP) 
                 ) u_pe (

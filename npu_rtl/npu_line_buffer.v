@@ -20,7 +20,7 @@ module npu_line_buffer #(
     // =======================================================
     input  wire                  shift_line_en,      // 换行滚动
     input  wire                  pixel_wr_en,    // 收到 1 拍 AXI 32-bit 数据
-    input  wire [31:0] pixel_wr_data,  // 永远是 32-bit AXI 接口！
+    input  wire [31:0]           pixel_wr_data,  // 永远是 32-bit AXI 接口！
 
     // =======================================================
     // 3. NPU 阵列滑动窗口提取接口 (Read Port - 永远吐 32-bit)

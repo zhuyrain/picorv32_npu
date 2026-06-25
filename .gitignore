@@ -41,4 +41,4 @@
 *.fsdb
 *.vcd
 *.vvp
-iVerdi/vcs_work
+iVerdi/vcs_work*
