@@ -127,7 +127,7 @@ module npu_line_buffer #(
     always @(*) begin
         // read_ic_group * 32 计算出起始 bit 索引
         // +: 32 表示从起始 bit 开始，向上截取固定的 32 bits
-        window_pixel_out = full_pixel[read_ic_group * 32 +: 32];
+        window_pixel_out = full_pixel[read_ic_group * DATA_WIDTH +: DATA_WIDTH];
     end
 
 endmodule

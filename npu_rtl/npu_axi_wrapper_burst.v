@@ -98,10 +98,13 @@ module npu_axi_wrapper_burst #(
     // 提取配置字段供内部 Datapath 和 FSM 使用
     wire [15:0] cfg_img_h         = reg_cfg_img_dim[31:16];
     wire [15:0] cfg_img_w         = reg_cfg_img_dim[15:0];
-    wire [13:0] out_stride        = reg_cfg_datapath[31:18];
+    wire [15:0] row_word_count    = reg_cfg_channels[31:16];
+    wire [15:0] weight_word_count = reg_cfg_channels[15:0];
+    wire [9:0]  out_stride        = reg_cfg_datapath[31:22];
+    wire [3:0]  lb_cfg_ic_groups_r= reg_cfg_datapath[21:18]; //读取时的输入通道组数受line buffer的位宽影响
     wire [7:0]  sa_cfg_weight_num = reg_cfg_datapath[17:10];
     wire [5:0]  lb_cfg_line_width = reg_cfg_datapath[9:4];
-    wire [3:0]  lb_cfg_ic_groups  = reg_cfg_datapath[3:0];
+    wire [3:0]  lb_cfg_ic_groups  = reg_cfg_datapath[3:0]; //写入时必须以总线位宽写入，因此输入通道组数会更多
 
     wire [31:0] current_status = {29'd0, reg_ctrl_status[2], npu_busy, 1'b0};
 
@@ -404,8 +407,8 @@ module npu_axi_wrapper_burst #(
     localparam S_IDLE            = 4'd0;
     localparam S_LOAD_BIAS       = 4'd1;
     localparam S_LOAD_WEIGHT     = 4'd2;
-    localparam S_LOAD_ROW        = 4'd3;
-    localparam S_SHIFT_LINE_INIT = 4'd4;
+    localparam S_WAIT_ROW        = 4'd3;
+    localparam S_FIRST_LINE_INIT = 4'd4;
     
     localparam S_WAIT_FIFO       = 4'd5; // 【新增】：滑窗发车前的检票站
     localparam S_COMPUTE         = 4'd6;
@@ -422,7 +425,7 @@ module npu_axi_wrapper_burst #(
     reg [2:0]      ig_cnt;           
     reg [15:0]     drain_cnt;        
 
-    reg        ar_done, aw_done, w_done;
+    reg        ar_done, aw_done;
     reg        first_row_loaded;
 
     // =========================================================
@@ -431,13 +434,13 @@ module npu_axi_wrapper_burst #(
     // Act_Row 一行需要读取的 32-bit word 数：img_w * ic_groups
 
     wire [7:0] cfg_oc_num = 4;
-    wire [15:0] row_word_count = cfg_img_w * ({13'd0, lb_cfg_ic_groups } + 1);
+    // wire [15:0] row_word_count = cfg_img_w * ({13'd0, lb_cfg_ic_groups } + 1);
     
     // Bias 仅需读取实际的输出通道数 (cfg_oc_num)
     wire [15:0] bias_word_count = {8'd0, cfg_oc_num};
     
     // 权重读取数 = (配的权重组数) * (实际输出通道数)
-    wire [15:0] weight_word_count = sa_cfg_weight_num * {8'd0, cfg_oc_num};
+    // wire [15:0] weight_word_count = sa_cfg_weight_num * {8'd0, cfg_oc_num};
 
     // =========================================================
     // 终极武器：参数化权重与 Bias 寻址缓冲区 (代替移位拼接)
@@ -528,7 +531,7 @@ module npu_axi_wrapper_burst #(
 
             ar_done <= 1'b0;
             aw_done <= 1'b0;
-            w_done  <= 1'b0;
+            // w_done  <= 1'b0;
 
             act_valid_in     <= 1'b0;
             sa_weight_en     <= 1'b0;
@@ -567,10 +570,11 @@ module npu_axi_wrapper_burst #(
 
                     ar_done <= 1'b0;
                     aw_done <= 1'b0;
-                    w_done  <= 1'b0;
+                    // w_done  <= 1'b0;
 
                     first_row_loaded <= 1'b0;
                     lb_shift_line_en <= 1'b0;
+                    bus_owner_is_pf  <= 1'b0; // 初始化时，权柄在 Master 手里
                     act_valid_in     <= 1'b0;
                     sa_weight_en     <= 1'b0;
                     acc_preload_bias <= 1'b0;
@@ -583,7 +587,6 @@ module npu_axi_wrapper_burst #(
                     if (npu_start_pulse) begin
                         npu_busy   <= 1'b1;
 
-                        act_ptr    <= reg_act_base;
                         weight_ptr <= reg_weight_base;
                         bias_ptr   <= reg_bias_base;
 
@@ -696,13 +699,9 @@ module npu_axi_wrapper_burst #(
                                 // 同样降维打击：不用数 weight_cycle_cnt 了！
                                 // 只要所有词收完了，就是整层权重加载完毕！
                                 if (weight_words_left == 16'd0) begin
-                                    // pack_cnt         <= 0;
                                     lb_shift_line_en <= 1'b1; // Pad Top
-                                    // 【交接总线权柄给预取】
-                                    bus_owner_is_pf  <= 1'b1;
-                                    // 扣动扳机，让预取机去读第一行
-                                    req_load_row     <= ~req_load_row; 
-                                    state            <= S_WAIT_ROW;
+
+                                    state            <= S_FIRST_LINE_INIT;
                                 end
                             end
                         end
@@ -710,22 +709,53 @@ module npu_axi_wrapper_burst #(
                 end
 
                 S_WAIT_ROW: begin
-                    lb_shift_line_en <= 1'b0;
+                    lb_shift_line_en <= 1'b0; // 默认不滚
+                    
                     // 【核心检票】：只看预取小弟干完没有
                     if (req_load_row == ack_load_row) begin
+                        
                         if (!first_row_loaded) begin
+                            // 【预热第 1 段】：第 0 行已经躺在 lb_3 了
                             first_row_loaded <= 1'b1;
-                            lb_shift_line_en <= 1'b1;
-                            req_load_row <= ~req_load_row;
-                        end
-                        // 此时可以直接再抠一次扳机，让小弟去预取下一行 (只要还没到图像底部)
-                        else if (oy < cfg_img_h - 2) begin
-                            req_load_row <= ~req_load_row;
-                            state <= S_COMPUTE; // 开始算命！
-                        end else begin
-                            state <= S_COMPUTE; // 开始算命！
+                            lb_shift_line_en <= 1'b1; // 行0 滚入 lb_2
+                            
+                            req_load_row <= ~req_load_row; // 扣扳机！读行 1
+                            // 保持在 S_WAIT_ROW 继续等行 1
+                        end 
+                        else begin
+                            // 【预热第 2 段 或 中途卡顿恢复】：准备计算了！
+                            lb_shift_line_en <= 1'b1; // 新行滚入 lb_2, 旧行去 lb_1
+                            
+                            // 只要还没到最后，立刻扣扳机！让 AXI 在后台重叠读下一行！
+                            if (oy < cfg_img_h - 2) begin
+                                req_load_row <= ~req_load_row;
+                            end
+
+                            if (!fifo_almost_full) begin
+                                act_valid_in <= 1'b1;
+                                state        <= S_COMPUTE;
+                            end else begin
+                                act_valid_in <= 1'b0;
+                                state        <= S_WAIT_FIFO;
+                            end
                         end
                     end
+                end
+
+                S_FIRST_LINE_INIT: begin
+                    sa_weight_en     <= 1'b0;
+                    lb_shift_line_en <= 1'b1;
+                    bus_owner_is_pf  <= 1'b1; 
+                    first_row_loaded <= 1'b0; // 复位预热标志
+                    req_load_row     <= ~req_load_row; // 扣扳机！读行 0
+
+                    // 【核心修复1】：初始化读取窗口 X 坐标！
+                    lb_window_base_x <= 6'd0; 
+                    lb_kernel_kx     <= 2'd0;
+                    lb_kernel_ky     <= 2'd0;
+                    lb_read_ic_group <= 4'd0;
+
+                    state <= S_WAIT_ROW;
                 end
 
                 S_COMPUTE: begin
@@ -737,7 +767,7 @@ module npu_axi_wrapper_burst #(
                         lb_kernel_kx <= 2'd0;
                         if (lb_kernel_ky == 2'd2) begin
                             lb_kernel_ky <= 2'd0;
-                            if (lb_read_ic_group == lb_cfg_ic_groups) begin
+                            if (lb_read_ic_group == lb_cfg_ic_groups_r) begin
                                 // 三层循环全部结束！进入排空态
                                 lb_read_ic_group <= 4'd0;
                                 // 【核心修复 2】：为下一拍提前撤销令牌！
@@ -784,37 +814,54 @@ module npu_axi_wrapper_burst #(
                             drain_cnt <= 0;
                             state <= S_WAIT_ALL_DONE; 
                         end else begin
-                            // 先Pad!
-                                lb_shift_line_en <= 1'b1; 
-                                lb_window_base_x <= 6'd0;
-
-                                // 初始化下一轮的 3D 嵌套坐标！& 提前配置权重有效信号
-                                lb_kernel_kx     <= 2'd0;
-                                lb_kernel_ky     <= 2'd0;
-                                lb_read_ic_group <= 4'd0;                
-                            if ((req_load_row == ack_load_row) || (oy == cfg_img_h - 2)) begin
-                                // 【Fast-Path 优化 2】
+                            lb_window_base_x <= 6'd0;
+                            lb_kernel_kx     <= 2'd0;
+                            lb_kernel_ky     <= 2'd0;
+                            lb_read_ic_group <= 4'd0; // 因为你改成了4位，这里是4'd0，很棒
+                            
+                            // 刚算完倒数第二行，准备算最后一行 (Pad)
+                            if (oy == cfg_img_h - 2) begin
+                                lb_shift_line_en <= 1'b1; // 绝对安全的 Shift，垫入底部 Pad 0
+                                
                                 if (!fifo_almost_full) begin
                                     act_valid_in <= 1'b1;
                                     state <= S_COMPUTE;
                                 end else begin
                                     state <= S_WAIT_FIFO;
                                 end
-                            end else begin
-                            // 如果没等于，说明总线卡了，被迫等待
-                                state <= S_WAIT_ROW;
+                            end 
+                            // 【Fast-Path 优化 2】：后台数据早已就绪！
+                            else if (req_load_row == ack_load_row) begin
+                                lb_shift_line_en <= 1'b1; // 安全 Shift！数据进入工作区
+                                
+                                // 【核心修复】：千万别忘了扣扳机让小弟去读下下行！
+                                // 【极致降维优化】：因为 H-1 和 H-2 已经被拦截
+                                // 此时 oy 最大只能是 H-3。当它是 H-3 时不再预取 Row(H)，因为图像到底了！
+                                if (oy != cfg_img_h - 3) begin
+                                    req_load_row <= ~req_load_row;
+                                end
+                                
+                                if (!fifo_almost_full) begin
+                                    act_valid_in <= 1'b1;
+                                    state <= S_COMPUTE;
+                                end else begin
+                                    state <= S_WAIT_FIFO;
+                                end
+                            end 
+                            // 【Slow-Path】：总线太卡，被迫等待
+                            else begin
+                                state <= S_WAIT_ROW; 
                             end
                         end
                     end else begin
                         ox <= ox + 1;
                         lb_window_base_x <= ox[5:0] + 1;
 
-                        // 初始化下一轮的 3D 嵌套坐标！& 提前配置权重有效信号
                         lb_kernel_kx     <= 2'd0;
                         lb_kernel_ky     <= 2'd0;
                         lb_read_ic_group <= 4'd0;
                         
-                        // 【Fast-Path 优化 3】
+                        // 行内移动，不涉及换行，继续算！
                         if (!fifo_almost_full) begin
                             act_valid_in <= 1'b1;
                             state <= S_COMPUTE;
