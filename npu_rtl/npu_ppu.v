@@ -1,7 +1,9 @@
 `timescale 1ns / 1ps
 
 module npu_ppu #(
-    parameter COLS = 4
+    parameter COLS = 4,
+    parameter PSUM_WIDTH = 32,   // 部分和位宽
+    parameter DATA_WIDTH = 8     // 模块内输出单个数据位宽
 )(
     input  wire                 clk,
     input  wire                 rst_n,
@@ -17,34 +19,44 @@ module npu_ppu #(
     // ==========================================
     // 2. 输入接口 (直连 npu_bottom_acc)
     // ==========================================
-    input  wire [COLS-1:0]      valid_in,       // 【修改】4列独立的有效信号
-    input  wire [127:0]         acc_in,         // 4 个 32-bit 部分和
+    input  wire [COLS-1:0]                   valid_in,
+    input  wire [COLS*PSUM_WIDTH - 1:0]      acc_in,
 
     // ==========================================
     // 3. 输出接口 (送往 npu_deskew_buffer)
     // ==========================================
-    output reg  [COLS-1:0]      valid_out,      // 【修改】4列独立的输出有效信号
-    output reg  [31:0]          data_out        // 打包好的 4 个 8-bit {OC3, OC2, OC1, OC0}
+    output reg  [COLS-1:0]                   valid_out,
+    output reg  [COLS*DATA_WIDTH - 1:0]      data_out
 );
 
     // ============================================================
-    // 流水线 Stage 1: 乘法级 (Multiplication)
+    // 自动推导中间位宽与饱和边界 (编译期计算，零硬件开销)
     // ============================================================
-    reg [COLS-1:0]    valid_s1;
-    reg signed [63:0] mult_s1 [0:COLS-1]; // 32b * 32b = 64b，防止溢出
+    // 乘法器结果位宽 = 部分和位宽 + 量化乘数位宽 (32)
+    localparam MULT_WIDTH = PSUM_WIDTH + 32; 
+    
+    // 饱和截断的正负边界推导 (例如 DATA_WIDTH=8 时，MAX=127, MIN=-127)
+    localparam signed [31:0] CLIP_MAX = (1 << (DATA_WIDTH - 1)) - 1;
+    localparam signed [31:0] CLIP_MIN = -(1 << (DATA_WIDTH - 1)) + 1;
+
+    // ============================================================
+    // 流水线 Stage 1: 乘法级
+    // ============================================================
+    reg [COLS-1:0]              valid_s1;
+    reg signed [MULT_WIDTH-1:0] mult_s1 [0:COLS-1]; 
 
     integer i;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             valid_s1 <= {COLS{1'b0}};
             for (i = 0; i < COLS; i = i + 1) 
-                mult_s1[i] <= 64'sd0;
+                mult_s1[i] <= {MULT_WIDTH{1'b0}};
         end else begin
-            // 每一列独立打拍
             for (i = 0; i < COLS; i = i + 1) begin
                 valid_s1[i] <= valid_in[i];
                 if (valid_in[i]) begin
-                    mult_s1[i] <= $signed(acc_in[(i*32) +: 32]) * cfg_multiplier;
+                    // 【修正】使用 PSUM_WIDTH 替换硬编码 32
+                    mult_s1[i] <= $signed(acc_in[(i*PSUM_WIDTH) +: PSUM_WIDTH]) * cfg_multiplier;
                 end
             end
         end
@@ -53,9 +65,9 @@ module npu_ppu #(
     // ============================================================
     // 流水线 Stage 2: 移位 -> 加 ZP -> 饱和截断 (组合逻辑)
     // ============================================================
-    wire signed [63:0] shifted_val [0:COLS-1];
-    wire signed [31:0] requantized [0:COLS-1];
-    reg  signed [7:0]  clipped_val [0:COLS-1];
+    wire signed [MULT_WIDTH-1:0] shifted_val [0:COLS-1];
+    wire signed [31:0]           requantized [0:COLS-1];
+    reg  signed [DATA_WIDTH-1:0] clipped_val [0:COLS-1]; // 【修正】位宽参数化
 
     genvar c;
     generate
@@ -70,14 +82,14 @@ module npu_ppu #(
             always @(*) begin
                 if (cfg_relu_en) begin
                     // 开启 ReLU：负数直接截断为 0，正数最大 127
-                    if (requantized[c] < 0)        clipped_val[c] = 8'sd0;
-                    else if (requantized[c] > 127) clipped_val[c] = 8'sd127;
-                    else                           clipped_val[c] = requantized[c][7:0];
+                    if (requantized[c] < 0)               clipped_val[c] = 0;
+                    else if (requantized[c] > CLIP_MAX)   clipped_val[c] = CLIP_MAX[DATA_WIDTH-1:0];
+                    else                                  clipped_val[c] = requantized[c][DATA_WIDTH-1:0];
                 end else begin
                     // 仅做 INT8 截断：[-127, 127]
-                    if (requantized[c] < -127)     clipped_val[c] = -8'sd127;
-                    else if (requantized[c] > 127) clipped_val[c] = 8'sd127;
-                    else                           clipped_val[c] = requantized[c][7:0];
+                    if (requantized[c] < CLIP_MIN)        clipped_val[c] = CLIP_MIN[DATA_WIDTH-1:0];
+                    else if (requantized[c] > CLIP_MAX)   clipped_val[c] = CLIP_MAX[DATA_WIDTH-1:0];
+                    else                                  clipped_val[c] = requantized[c][DATA_WIDTH-1:0];
                 end
             end
         end
@@ -90,14 +102,13 @@ module npu_ppu #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             valid_out <= {COLS{1'b0}};
-            data_out  <= 32'd0;
+            data_out  <= {(COLS*DATA_WIDTH){1'b0}};
         end else begin
             for (j = 0; j < COLS; j = j + 1) begin
                 valid_out[j] <= valid_s1[j];
                 if (valid_s1[j]) begin
-                    // 仅更新当前有效列的 8-bit 切片，其他列保持原样
-                    // 这是 Verilog 中非常优美的局部更新语法
-                    data_out[(j*8) +: 8] <= clipped_val[j];
+                    // 【修正】使用 DATA_WIDTH 替换硬编码 8
+                    data_out[(j*DATA_WIDTH) +: DATA_WIDTH] <= clipped_val[j];
                 end
             end
         end

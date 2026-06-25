@@ -99,7 +99,7 @@ module sa #(
                     .clk            (clk),
                     .rst_n          (rst_n),
                     
-                    // 配置流
+                    // 配置流  此参数感觉也可以用流动的方式写入
                     .cfg_weight_num (cfg_weight_num),
                     
                     // 控制流

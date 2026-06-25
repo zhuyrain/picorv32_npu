@@ -353,14 +353,16 @@ module npu_axi_wrapper_burst #(
     );
 
     npu_ppu #(
-        .COLS(SYS_COLS)
+        .COLS(SYS_COLS),
+        .PSUM_WIDTH(32),   // 输入部分和位宽
+        .DATA_WIDTH(8)     //输出单个数据位宽
     ) u_ppu (
         .clk            (clk),
         .rst_n          (rst_n),
         .cfg_multiplier ({16'b0,reg_cfg_quant[15:0]}),
         .cfg_shift      (reg_cfg_quant[20:16]),
         .cfg_out_zp     (32'd0),
-        .cfg_relu_en    (1'b1), // V1.0 暂不开启
+        .cfg_relu_en    (1'b1), // relu使能 可能也需要参数化
         .valid_in       (ppu_valid_trigger),
         .acc_in         (final_acc_out),
         .valid_out      (ppu_valid_out),
