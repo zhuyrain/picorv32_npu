@@ -1,23 +1,21 @@
 # ============================================================================
-# VCS Simulation Makefile for RISC-V / NPU SoC (Dynamic Case Edition)
+# VCS Simulation Makefile for RISC-V / NPU SoC (64x64 Array Ready)
 # ============================================================================
 
 # ----------------------------------------------------------------------------
 # 1. 动态获取工程根目录与工作区划定
 # ----------------------------------------------------------------------------
 CUR_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-# 根据你的工程结构，推算根目录 (如果 Makefile 在 scripts 目录下，按需调整 ../..)
 PROJ_ROOT := $(abspath $(CUR_DIR)/..)
 export PROJ_ROOT
 
-# 工作目录设置 (所有 VCS 编译产物、日志、FSDB 都会生成在这里，保持源码目录干净)
+# 工作目录设置 (所有编译产物隔离，保持源码干净)
 WORK_DIR  := $(CUR_DIR)/vcs_work
 
 $(info [INFO] Auto-detected PROJ_ROOT: $(PROJ_ROOT))
 
 # ----------------------------------------------------------------------------
-# 2. 核心优雅写法：动态文件列表与 Top 模块选择
-# 命令行用法: make CASE=1 或 make CASE=2 或 make CASE=3 (默认走 1)
+# 2. 动态文件列表与 Top 模块选择
 # ----------------------------------------------------------------------------
 CASE ?= 1
 
@@ -25,8 +23,21 @@ SRC_ROOT_NPU = $(PROJ_ROOT)/npu_rtl
 
 # [配置 1] PicoRV32 SoC 完整仿真 (默认)
 SRC_FILES_1 = $(PROJ_ROOT)/picorv32.v \
+              $(SRC_ROOT_NPU)/pe.v \
+              $(SRC_ROOT_NPU)/act_skew_buffer.v \
+              $(SRC_ROOT_NPU)/sa.v \
+              $(SRC_ROOT_NPU)/npu_bottom_acc.v \
+              $(SRC_ROOT_NPU)/npu_ppu.v \
+              $(SRC_ROOT_NPU)/npu_deskew_buffer.v \
+              $(SRC_ROOT_NPU)/npu_sync_fifo.v \
+              $(SRC_ROOT_NPU)/npu_line_buffer.v \
+              $(SRC_ROOT_NPU)/npu_axi_wrapper_burst.v \
               $(SRC_ROOT_NPU)/axi_sram.v \
-              $(PROJ_ROOT)/tb_picorv32.v
+              $(SRC_ROOT_NPU)/axil_interconnect.v \
+              $(SRC_ROOT_NPU)/arbiter.v \
+              $(SRC_ROOT_NPU)/priority_encoder.v \
+              $(SRC_ROOT_NPU)/axi_dp_sram_hybrid.v \
+              $(SRC_ROOT_NPU)/tb_picorv32.v
 TB_TOP_1    = tb_picorv32
 FSDB_NAME_1 = picorv32_soc.fsdb
 
@@ -52,18 +63,27 @@ SRC_FILES_3 = $(SRC_ROOT_NPU)/pe.v \
               $(SRC_ROOT_NPU)/npu_line_buffer.v \
               $(SRC_ROOT_NPU)/npu_axi_wrapper_lite.v \
               $(SRC_ROOT_NPU)/axi_sram.v \
+              $(SRC_ROOT_NPU)/axil_interconnect.v \
+              $(SRC_ROOT_NPU)/arbiter.v \
+              $(SRC_ROOT_NPU)/priority_encoder.v \
               $(SRC_ROOT_NPU)/tb_npu_system.v
 TB_TOP_3    = tb_npu_system
 FSDB_NAME_3 = tb_npu_system.fsdb
 
-# 根据 CASE 动态组装当前需要使用的变量
+# [配置 4] 双端口Burst SRAM & 虚拟CPU 仿真 (从iverilog补齐)
+SRC_FILES_4 = $(SRC_ROOT_NPU)/axi_dp_sram_hybrid.v \
+              $(SRC_ROOT_NPU)/tb_axi_dp_sram_hybrid_burst.v
+TB_TOP_4    = tb_axi_dp_sram_hybrid_burst
+FSDB_NAME_4 = tb_axi_dp_sram_hybrid_burst.fsdb
+
+
 SRC_FILES = $(SRC_FILES_$(CASE))
 TB_TOP    = $(TB_TOP_$(CASE))
 FSDB_NAME = $(FSDB_NAME_$(CASE))
 
 # 防呆设计
 ifeq ($(strip $(SRC_FILES)),)
-$(error "错误: 未知的仿真用例 CASE=$(CASE)！请指定 CASE=1 或 CASE=2 或 CASE=3")
+$(error "错误: 未知的仿真用例 CASE=$(CASE)！请指定 1~4")
 endif
 
 # ----------------------------------------------------------------------------
@@ -71,56 +91,62 @@ endif
 # ----------------------------------------------------------------------------
 VCS_FLAGS := -full64 -sverilog
 VCS_FLAGS += -timescale=1ns/1ps
-VCS_FLAGS += -debug_access+all  # 开启 Verdi 调试与内存读取权限
-VCS_FLAGS += -kdb -lca          # 开启 Verdi KDB 知识库支持，加速波形和代码追踪
-VCS_FLAGS += -top $(TB_TOP)     # 动态指定当前仿真的顶层模块
+VCS_FLAGS += -debug_access+all  # Verdi 调试必备权限
+VCS_FLAGS += -kdb -lca          # 开启 KDB
+VCS_FLAGS += -top $(TB_TOP)
 VCS_FLAGS += -Mdir=csrc
 VCS_FLAGS += -o simv
 VCS_FLAGS += -l compile.log
+
+# 如果你想启用 iverilog 中的 SIM_CHECKS 宏，可以通过 make CHECK=1 传入
+ifeq ($(CHECK), 1)
+VCS_FLAGS += +define+SIM_CHECKS
+endif
 
 # ----------------------------------------------------------------------------
 # 4. 仿真执行参数 (Simulation Flags)
 # ----------------------------------------------------------------------------
 SIM_FLAGS := -l sim.log
-# 加入 MDA 抓取增强参数，配合你在 TB 里写的 $fsdbDumpMDA()
 SIM_FLAGS += +fsdb+mda 
+SIM_FLAGS += +fsdbfile+$(FSDB_NAME)  # 强制指定输出的 fsdb 文件名
 
 # ----------------------------------------------------------------------------
 # 5. 执行目标 (Targets)
 # ----------------------------------------------------------------------------
-.PHONY: all prepare compile sim wave clean
+.PHONY: all prepare compile sim wave clean check
 
-# 默认一键起飞流程：编译 -> 仿真 -> 打开波形
 all: compile sim wave
 
 prepare:
 	@mkdir -p $(WORK_DIR)
 
-# 编译 Verilog 代码
+# 编译
 compile: prepare
 	@echo "================================================="
-	@echo "  [1/3] Starting VCS Compilation"
-	@echo "        CASE = $(CASE), TOP = $(TB_TOP)"
+	@echo "  [1/3] Starting VCS Compilation (CASE=$(CASE))"
 	@echo "================================================="
-	# 直接将变量 $(SRC_FILES) 展开传递给 VCS，避免每次都要动态生成 filelist.f
 	cd $(WORK_DIR) && vcs $(VCS_FLAGS) $(SRC_FILES)
 
-# 运行仿真 (VCS 原生直接生成 FSDB)
+# 仿真
 sim:
 	@echo "================================================="
 	@echo "  [2/3] Running Simulation & Dumping FSDB"
 	@echo "================================================="
+	@# [新增行] 将当前目录下的 firmware.hex 软链接到工作区
+	@ln -sf $(CUR_DIR)/firmware.hex $(WORK_DIR)/ 
 	cd $(WORK_DIR) && ./simv $(SIM_FLAGS)
+
+# 带 SIM_CHECKS 宏的快速编译通道
+check: prepare
+	@$(MAKE) compile CHECK=1
 
 # 后台呼出 Verdi
 wave:
 	@echo "================================================="
 	@echo "  [3/3] Opening Waveform in Verdi"
 	@echo "================================================="
-	# 挂载 KDB 数据库，并读取对应的 fsdb 文件
 	cd $(WORK_DIR) && verdi -dbdir simv.daidir -ssf $(FSDB_NAME) &
 
-# 深度清理
 clean:
 	@echo "--- Cleaning Workspace ---"
 	rm -rf $(WORK_DIR)

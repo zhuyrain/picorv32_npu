@@ -21,9 +21,22 @@ module tb_picorv32;
     end
 
     initial begin
+        // ==========================================
+        // 兼容多平台的波形 Dump 写法
+        // ==========================================
+    `ifdef VCS // 当你用 VCS 编译时，VCS 会自动预定义这个宏
+        $display("Dumping FSDB wave...");
+        $fsdbDumpfile("picorv32_soc.fsdb"); // 也可以不写，Makefile 里的 +fsdbfile+ 已经做了重定向
+        $fsdbDumpvars(0, tb_picorv32);      // 0 表示记录该层级及其下所有层级的信号
+        $fsdbDumpMDA(1000);                 // 配合 +fsdb+mda 记录多维数组（SRAM、寄存器堆内部变量），深度设大一点
+    `else
+        // 兼容你原来的 iverilog
         $dumpfile("picorv32_soc.vcd");
-        $dumpvars(0, tb_picorv32); // 抓取所有层级的信号
+        $dumpvars(0, tb_picorv32);
+    `endif
+    end
 
+    initial begin
         // 严格复位序列 (消除 X 态)
         resetn = 0;
         #100;
@@ -190,9 +203,9 @@ module tb_picorv32;
                     
                     // 依据 wstrb，小端序依次打印，把被编译器合并的字符全抠出来
                     if (final_wstrb[0]) $write("%c", final_wdata[7:0]);
-                    if (final_wstrb[1]) $write("%c", final_wdata[15:8]);
-                    if (final_wstrb[2]) $write("%c", final_wdata[23:16]);
-                    if (final_wstrb[3]) $write("%c", final_wdata[31:24]);
+                    // if (final_wstrb[1]) $write("%c", final_wdata[15:8]);
+                    // if (final_wstrb[2]) $write("%c", final_wdata[23:16]);
+                    // if (final_wstrb[3]) $write("%c", final_wdata[31:24]);
                     
                     $fflush();
                 end
@@ -284,7 +297,10 @@ module tb_picorv32;
     // =========================================================================
     // 6. 例化 NPU 异构加速子系统
     // =========================================================================
-    npu_axi_wrapper_burst u_npu_wrapper (
+    npu_axi_wrapper_burst #(
+        .SYS_ROWS(4), 
+        .SYS_COLS(4)
+    ) u_npu_wrapper (
         .clk            (clk), 
         .rst_n          (resetn),
         
