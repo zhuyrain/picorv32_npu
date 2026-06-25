@@ -332,6 +332,7 @@ module npu_axi_wrapper_burst #(
         .left_act_in      (act_out_skewed),
         .left_act_valid   (act_valid_out_skewed),
         .top_weight_in    (sa_top_weight_in),
+        .weight_row_group (weight_row_group_cnt),
         .top_bias_in      ({(SYS_COLS*32){1'b0}}), // 动态适配填 0
         .bottom_psum_out  (sa_bottom_psum_out),
         .bottom_valid_out (sa_bottom_valid_out)
@@ -423,6 +424,7 @@ module npu_axi_wrapper_burst #(
     reg [31:0] pf_act_ptr, weight_ptr, bias_ptr, out_ptr;
     
     reg [PC_W-1:0] pack_cnt;         // 自动推导位宽的轮询计数器
+    reg [3:0] weight_row_group_cnt; // 与输入通道组数位宽位宽相同
     reg [15:0]     pixel_cnt;
     reg [2:0]      ig_cnt;           
     reg [15:0]     drain_cnt;        
@@ -537,6 +539,7 @@ module npu_axi_wrapper_burst #(
 
             act_valid_in     <= 1'b0;
             sa_weight_en     <= 1'b0;
+            weight_row_group_cnt <= 4'd0;
             lb_shift_line_en <= 1'b0;
             acc_preload_bias <= 1'b0;
 
@@ -649,6 +652,7 @@ module npu_axi_wrapper_burst #(
                                 if (bias_words_left == 16'd0) begin
                                     acc_preload_bias <= 1'b1;
                                     weight_words_left<= weight_word_count;
+                                    weight_row_group_cnt <= 4'b1111;
                                     pack_cnt         <= 0; // 为权重加载状态提前清零
                                     state            <= S_LOAD_WEIGHT;
                                 end
@@ -689,6 +693,11 @@ module npu_axi_wrapper_burst #(
                             // 动态截断：读到配置的实际通道数就结束一轮！不再是写死的 3'd3！
                             if (pack_cnt == cfg_oc_num - 1'b1) begin
                                 sa_weight_en <= 1'b1;
+                                if ( weight_row_group_cnt == (SYS_ROWS - 1)/4) begin
+                                    weight_row_group_cnt <= 0;
+                                end else begin
+                                    weight_row_group_cnt <= weight_row_group_cnt + 1;
+                                end
                                 pack_cnt     <= 0; // 轮询归零，完美无气泡
                             end else begin
                                 pack_cnt     <= pack_cnt + 1;

@@ -4,8 +4,8 @@ module sa #(
     // ==========================================
     // 阵列维度配置参数
     // ==========================================
-    parameter ROWS = 4, // 脉动阵列的行数 (默认 4)
-    parameter COLS = 4  // 脉动阵列的列数 (默认 4)
+    parameter ROWS = 4, // 脉动阵列的行数 (可以扩充到 32 或 64)
+    parameter COLS = 4  // 脉动阵列的列数
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -15,6 +15,9 @@ module sa #(
 
     // --- 全局控制 ---
     input  wire        weight_en, // 1: 配置权重模式; 0: 计算模式
+    
+    // 【新增】：当前正在配置的是第几组 (0~15) 权重？
+    input  wire [3:0]  weight_row_group,
 
     // --- 边界数据输入 ---
     // 左侧特征图输入: 每行 8-bit，总位宽 = ROWS * 8
@@ -46,6 +49,9 @@ module sa #(
     wire [31:0] psum_wire      [0:ROWS-1][0:COLS-1];
     wire [31:0] weight_wire    [0:ROWS-1][0:COLS-1]; 
     wire        weight_en_wire [0:ROWS-1][0:COLS-1];
+    
+    // 【新增】：全局广播连线，把 weight_row_group 垂直打拍传下去
+    wire [3:0]  weight_group_wire [0:ROWS-1][0:COLS-1];
 
     // ==========================================
     // 2. 核心 RxC 脉动阵列例化与缝合
@@ -53,6 +59,11 @@ module sa #(
     genvar r, c;
     generate
         for (r = 0; r < ROWS; r = r + 1) begin : ROW
+            
+            // 【核心降维】：计算当前行所在的权重分组 (0, 1, 2...)
+            // 整数除法，向下取整：0~3->0, 4~7->1, 8~11->2
+            localparam MY_WEIGHT_GROUP = r / 4; 
+            
             for (c = 0; c < COLS; c = c + 1) begin : COL
                 
                 // ----------------------------------------------------
@@ -77,24 +88,31 @@ module sa #(
                 wire [31:0] pe_psum_in;
                 wire [31:0] pe_weight_in;
                 wire        pe_wen_in;
+                wire [3:0]  pe_group_in;
                 
                 if (r == 0) begin : VERT_EDGE
                     // 最顶层行：直接吃对应的物理独立总线
                     assign pe_psum_in   = top_bias_in[(c*32)+31 : c*32];
                     assign pe_weight_in = top_weight_in[(c*32)+31 : c*32];
                     assign pe_wen_in    = weight_en;
+                    assign pe_group_in  = weight_row_group; // 顶层直接吃外部组号
                 end else begin : VERT_INNER
                     // 内部行：吃上方相邻 PE 的输出
                     assign pe_psum_in   = psum_wire[r-1][c];
                     assign pe_weight_in = weight_wire[r-1][c];
                     assign pe_wen_in    = weight_en_wire[r-1][c];
+                    assign pe_group_in  = weight_group_wire[r-1][c]; // 内部吃上方传递的组号
                 end
 
                 // ----------------------------------------------------
                 // C. 完美例化 PE
                 // ----------------------------------------------------
                 pe #(
-                    .MAX_WEIGHTS    (144)
+                    // 现在的 PE 不需要存 144 个了！它只需要存属于自己的 9 个权重！
+                    // 为了保证兼容性，你也可以先留一个安全大小，比如 36
+                    .MAX_WEIGHTS    (144),
+                    // 将计算好的本行专属 Group 号作为参数传入 PE
+                    .MY_GROUP       (MY_WEIGHT_GROUP) 
                 ) u_pe (
                     .clk            (clk),
                     .rst_n          (rst_n),
@@ -102,7 +120,10 @@ module sa #(
                     // 配置流  此参数感觉也可以用流动的方式写入
                     .cfg_weight_num (cfg_weight_num),
                     
-                    // 控制流
+                    // 【新增】：告诉 PE 现在外面广播的是第几组？
+                    .weight_group_in  (pe_group_in),
+                    .weight_group_out (weight_group_wire[r][c]), // 打一拍传给下方
+                    
                     .weight_en_in   (pe_wen_in),
                     .weight_en_out  (weight_en_wire[r][c]),
                     .act_valid_in   (pe_act_valid_in),
