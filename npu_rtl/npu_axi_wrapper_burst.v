@@ -397,7 +397,7 @@ module npu_axi_wrapper_burst #(
         .rst_n      (rst_n),
         .wr_en      (deskewed_valid_out), 
         .wr_data    (deskewed_data_out),
-        .rd_en      (m_axi_wready && m_axi_wvalid), // 【见下文提示】
+        .rd_en      (m_axi_wvalid && m_axi_wready && m_axi_wlast), // 【见下文提示】
         .rd_data    (fifo_rd_data),
         .empty      (fifo_empty),
         .full       (fifo_full),
@@ -903,15 +903,21 @@ module npu_axi_wrapper_burst #(
     // [模块 4]: 独立运行的 AXI 写回状态机 (Backend Write FSM)
     // =========================================================
     reg [1:0] wr_state;
+    reg [7:0] wr_beat_cnt; // 记录当前 Burst 写入了第几拍
     // 状态定义: W_IDLE(0), W_AW(1), W_W(2), W_B(3)
 
     // 提供给主状态机的标志位
     wire write_fsm_idle = (wr_state == 2'd0);
 
+    // 【参数化动态计算】：目标突发长度 (cfg_oc_num 个 8-bit = cfg_oc_num/4 个 32-bit word)
+    // AXI AWLEN = 拍数 - 1
+    wire [7:0] target_awlen = (cfg_oc_num >> 2) - 8'd1;
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            wr_state <= 2'd0;
-            out_ptr  <= 32'd0;
+            wr_state    <= 2'd0;
+            out_ptr     <= 32'd0;
+            wr_beat_cnt <= 8'd0;
 
             m_axi_awaddr  <= 32'd0;
             m_axi_awlen   <= 8'd0;
@@ -927,9 +933,10 @@ module npu_axi_wrapper_burst #(
             m_axi_bready  <= 1'b0;
         end else begin
             if (npu_start_pulse) begin
-                out_ptr <= reg_out_base;
+                out_ptr     <= reg_out_base;
 
-                wr_state <= 2'd0;
+                wr_state    <= 2'd0;
+                wr_beat_cnt <= 8'd0;
 
                 m_axi_awvalid <= 1'b0;
                 m_axi_wvalid  <= 1'b0;
@@ -940,32 +947,33 @@ module npu_axi_wrapper_burst #(
 
                     // --------------------------------------------------
                     // W_IDLE:
-                    // FIFO 里有数据就发起 single-beat AXI write burst。
+                    // FIFO 里有完整像素，发起 AXI Burst Write
                     // --------------------------------------------------
                     2'd0: begin
                         if (!fifo_empty) begin
                             m_axi_awaddr  <= out_ptr;
-                            m_axi_awlen   <= 8'd0;      // single-beat
-                            m_axi_awsize  <= 3'd2;      // 4 bytes / beat
-                            m_axi_awburst <= 2'b01;     // INCR
+                            m_axi_awlen   <= target_awlen; // 【更新】动态突发长度
+                            m_axi_awsize  <= 3'd2;         // 4 bytes / beat
+                            m_axi_awburst <= 2'b01;        // INCR
                             m_axi_awvalid <= 1'b1;
 
-                            wr_state <= 2'd1;
+                            wr_beat_cnt   <= 8'd0;
+                            wr_state      <= 2'd1;
                         end
                     end
 
                     // --------------------------------------------------
                     // W_AW:
-                    // 等待 AW 握手。你的 hybrid SRAM Port B 是先 AW 后 W，
-                    // 所以 AW 完成后再发 W 是匹配的。
+                    // 等待 AW 握手，并提前准备 W 通道的第一拍数据
                     // --------------------------------------------------
                     2'd1: begin
                         if (m_axi_awvalid && m_axi_awready) begin
                             m_axi_awvalid <= 1'b0;
 
-                            m_axi_wdata   <= fifo_rd_data;
+                            // 准备第 0 拍数据 (提取 FIFO 输出的最低 32-bit)
+                            m_axi_wdata   <= fifo_rd_data[31:0];
                             m_axi_wstrb   <= 4'b1111;
-                            m_axi_wlast   <= 1'b1;
+                            m_axi_wlast   <= (target_awlen == 8'd0) ? 1'b1 : 1'b0;
                             m_axi_wvalid  <= 1'b1;
 
                             wr_state <= 2'd2;
@@ -974,30 +982,37 @@ module npu_axi_wrapper_burst #(
 
                     // --------------------------------------------------
                     // W_W:
-                    // single-beat 写数据。
-                    // FIFO 的 rd_en = m_axi_wvalid && m_axi_wready，
-                    // 所以 W 握手成功时 FIFO 自动弹出当前 word。
+                    // 连续写入数据。利用 wr_beat_cnt 动态提取 FIFO 宽总线数据
                     // --------------------------------------------------
                     2'd2: begin
                         if (m_axi_wvalid && m_axi_wready) begin
-                            m_axi_wvalid <= 1'b0;
-                            m_axi_wlast  <= 1'b0;
-                            m_axi_wstrb  <= 4'b0000;
+                            if (m_axi_wlast) begin
+                                // 最后一拍握手成功，关闭 W 通道
+                                m_axi_wvalid <= 1'b0;
+                                m_axi_wlast  <= 1'b0;
+                                m_axi_wstrb  <= 4'b0000;
 
-                            m_axi_bready <= 1'b1;
-
-                            wr_state <= 2'd3;
+                                m_axi_bready <= 1'b1;
+                                wr_state     <= 2'd3;
+                            end else begin
+                                // 普通拍握手成功，准备下一拍数据
+                                wr_beat_cnt  <= wr_beat_cnt + 8'd1;
+                                // 【极简魔法】：直接动态寻址截取下一个 32-bit
+                                m_axi_wdata  <= fifo_rd_data[(wr_beat_cnt + 8'd1) * 32 +: 32];
+                                m_axi_wlast  <= (wr_beat_cnt + 8'd1 == target_awlen) ? 1'b1 : 1'b0;
+                            end
                         end
                     end
 
                     // --------------------------------------------------
                     // W_B:
-                    // 等待写响应。
+                    // 等待写响应，累加 out_stride，跳至下一个像素空间地址
                     // --------------------------------------------------
                     2'd3: begin
                         if (m_axi_bvalid && m_axi_bready) begin
                             m_axi_bready <= 1'b0;
 
+                            // 整个像素写完后，指针向前跳跃 out_stride
                             out_ptr <= out_ptr + out_stride;
 
                             wr_state <= 2'd0;
