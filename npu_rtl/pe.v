@@ -98,16 +98,21 @@ module pe #(
             act_valid_out <= act_valid_in;
             weight_group_out <= weight_group_in;
             // --- 2. 权重配置态 (独立控制 写指针) ---
-            if (weight_en_in && (weight_group_in == MY_GROUP)) begin
-                // 将低 8 位写进 Cow Buffer
-                weight_buf[wr_weight_idx] <= $signed(weight_in[7:0]);
-                weight_out <= {8'd0, weight_in[31:8]};
-                
-                // 写指针根据外部配置的动态边界进行环形自增
-                if (wr_weight_idx == cfg_weight_num - 1)
-                    wr_weight_idx <= 8'd0;
-                else
-                    wr_weight_idx <= wr_weight_idx + 8'd1;
+            if (weight_en_in) begin
+                if (weight_group_in == MY_GROUP) begin
+                    // 将低 8 位写进 Cow Buffer
+                    weight_buf[wr_weight_idx] <= $signed(weight_in[7:0]);
+                    weight_out <= {8'd0, weight_in[31:8]};
+                    
+                    // 写指针根据外部配置的动态边界进行环形自增
+                    if (wr_weight_idx == cfg_weight_num - 1)
+                        wr_weight_idx <= 8'd0;
+                    else
+                        wr_weight_idx <= wr_weight_idx + 8'd1;
+                end else begin
+                    weight_out <= weight_in;
+                end
+
             end 
             
             // --- 3. 数据驱动计算态 (独立控制 读指针) ---

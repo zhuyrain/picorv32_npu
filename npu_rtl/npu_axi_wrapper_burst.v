@@ -288,6 +288,7 @@ module npu_axi_wrapper_burst #(
     wire                   deskewed_valid_out;
 
     reg [3:0] weight_row_group_cnt; // 与输入通道组数位宽位宽相同
+    reg [7:0] weight_num_cnt; // 与每个PE配置的权重个数相同
     
     reg [1:0]  wr_state;
     reg [15:0] wr_words_left;  // 当前像素还有多少个 32-bit word 没发完
@@ -556,6 +557,7 @@ module npu_axi_wrapper_burst #(
             act_valid_in     <= 1'b0;
             sa_weight_en     <= 1'b0;
             weight_row_group_cnt <= 4'd0;
+            weight_num_cnt <= 8'd0;
             lb_shift_line_en <= 1'b0;
             acc_preload_bias <= 1'b0;
 
@@ -667,7 +669,8 @@ module npu_axi_wrapper_burst #(
                                 if (bias_words_left == 16'd0) begin
                                     acc_preload_bias <= 1'b1;
                                     weight_words_left<= weight_word_count;
-                                    weight_row_group_cnt <= 4'b1111;
+                                    weight_row_group_cnt <= lb_cfg_ic_groups;
+                                    weight_num_cnt   <= sa_cfg_weight_num - 1;
                                     pack_cnt         <= 0; // 为权重加载状态提前清零
                                     state            <= S_LOAD_WEIGHT;
                                 end
@@ -708,10 +711,16 @@ module npu_axi_wrapper_burst #(
                             // 动态截断：读到配置的实际通道数就结束一轮！不再是写死的 3'd3！
                             if (pack_cnt == cfg_oc_num - 1'b1) begin
                                 sa_weight_en <= 1'b1;
-                                if ( weight_row_group_cnt == lb_cfg_ic_groups) begin
-                                    weight_row_group_cnt <= 0;
+                                if (weight_num_cnt == sa_cfg_weight_num - 1) begin
+                                    if ( weight_row_group_cnt == lb_cfg_ic_groups) begin
+                                        weight_row_group_cnt <= 0;
+                                    end else begin
+                                        weight_row_group_cnt <= weight_row_group_cnt + 1;
+                                    end
+                                    // 【核心修复】：别忘了把空间计数器复位！否则它会一直加上去
+                                    weight_num_cnt <= 0; 
                                 end else begin
-                                    weight_row_group_cnt <= weight_row_group_cnt + 1;
+                                    weight_num_cnt <= weight_num_cnt + 1;
                                 end
                                 pack_cnt     <= 0; // 轮询归零，完美无气泡
                             end else begin
