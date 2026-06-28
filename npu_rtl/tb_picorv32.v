@@ -24,15 +24,29 @@ module tb_picorv32;
         // ==========================================
         // 兼容多平台的波形 Dump 写法
         // ==========================================
-    `ifdef VCS // 当你用 VCS 编译时，VCS 会自动预定义这个宏
+    `ifdef VCS // 用 VCS 编译时，VCS 会自动预定义这个宏
+        // $display("Dumping FSDB wave...");
+        // $fsdbDumpfile("picorv32_soc.fsdb"); // 也可以不写，Makefile 里的 +fsdbfile+ 已经做了重定向
+        // $fsdbDumpvars(0, tb_picorv32);      // 0 表示记录该层级及其下所有层级的信号
+        // $fsdbDumpMDA(1000);                 // 配合 +fsdb+mda 记录多维数组（SRAM、寄存器堆内部变量），深度设大一点
         $display("Dumping FSDB wave...");
-        $fsdbDumpfile("picorv32_soc.fsdb"); // 也可以不写，Makefile 里的 +fsdbfile+ 已经做了重定向
-        $fsdbDumpvars(0, tb_picorv32);      // 0 表示记录该层级及其下所有层级的信号
-        $fsdbDumpMDA(1000);                 // 配合 +fsdb+mda 记录多维数组（SRAM、寄存器堆内部变量），深度设大一点
+        $fsdbDumpfile("picorv32_soc.fsdb");
+        
+        // 1. 普通信号：依然保持只看顶层或 wrapper (Level = 1 或 2)
+        $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper);
+        $fsdbDumpvars(1, tb_picorv32); // 也可以把 CPU 外围总线带上
+        
+        // 2. [核心修改] 数组信号：不全局 Dump！只指向真正关心的数组实体
+        // 比如想看 AXI SRAM 的内部数据：
+        // 参数含义：(深度, 指定模块名)
+        // $fsdbDumpMDA(1, tb_picorv32.u_sram); 
+        
+        // 如果想看某个特定的 Line Buffer：
+        // $fsdbDumpMDA(1, tb_picorv32.u_npu_wrapper.u_lb);
     `else
-        // 兼容你原来的 iverilog
-        $dumpfile("picorv32_soc.vcd");
-        $dumpvars(0, tb_picorv32);
+        // // 兼容 iverilog
+        // $dumpfile("picorv32_soc.vcd");
+        // $dumpvars(0, tb_picorv32);
     `endif
     end
 

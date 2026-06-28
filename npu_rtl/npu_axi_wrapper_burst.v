@@ -1058,7 +1058,13 @@ module npu_axi_wrapper_burst #(
                                 // 整个超级像素全部写完！
                                 // 【核心物理补偿】：补偿本像素内累加的偏移，加上 out_stride 跳向下个像素的起点！
                                 out_ptr  <= out_ptr + {22'd0, out_stride} - {24'd0, cfg_oc_num};
-                                wr_state <= 2'd0; // 回去等下一个像素
+                                if(fifo_empty) begin
+                                    wr_state <= 2'd0; // 回去等下一个像素
+                                end else begin
+                                    wr_words_left  <= {8'd0, cfg_oc_num[7:2]}; 
+                                    pixel_word_idx <= 8'd0;
+                                    wr_state <= 2'd1;
+                                end
                             end else begin
                                 // 被 4KB 边界切断，当前像素还没发完，回去继续发剩余部分！
                                 wr_state <= 2'd1;

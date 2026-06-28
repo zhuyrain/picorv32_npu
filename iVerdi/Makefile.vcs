@@ -98,6 +98,18 @@ VCS_FLAGS += -Mdir=csrc
 VCS_FLAGS += -o simv
 VCS_FLAGS += -l compile.log
 
+#[新增] 多核极速编译
+VCS_FLAGS += -j8
+
+#[新增] O2 级别的仿真期优化，极大加快长数据的运算速度
+VCS_FLAGS += -O2
+
+# #[新增] 屏蔽烦人的未连接端口警告
+# VCS_FLAGS += +lint=TFIPC-L  
+
+# #[可选] 如果你想尝试运行时多核并行仿真，取消下面这行的注释
+# VCS_FLAGS += -fgp
+
 # 如果你想启用 iverilog 中的 SIM_CHECKS 宏，可以通过 make CHECK=1 传入
 ifeq ($(CHECK), 1)
 VCS_FLAGS += +define+SIM_CHECKS
@@ -109,6 +121,12 @@ endif
 SIM_FLAGS := -l sim.log
 SIM_FLAGS += +fsdb+mda 
 SIM_FLAGS += +fsdbfile+$(FSDB_NAME)  # 强制指定输出的 fsdb 文件名
+
+# [新增] 阻止 ASLR 检测带来的二次重启，让启动更丝滑
+SIM_FLAGS += -no_save
+
+# # [可选] 如果上面开启了 -fgp，取消下面这行的注释，分配 4 个线程进行仿真
+# SIM_FLAGS += -fgp=4
 
 # ----------------------------------------------------------------------------
 # 5. 执行目标 (Targets)
