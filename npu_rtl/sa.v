@@ -9,6 +9,8 @@ module sa #(
 )(
     input  wire        clk,
     input  wire        rst_n,
+    input  wire        npu_busy,     // 来自 FSM 的全局激活信号
+    input  wire [15:0] col_group_en, // 来自 CPU 配置寄存器
 
     // 当前网络层实际需要循环的权重数量 (例如第一层填 9，第二层填 36)
     input  wire [7:0]  cfg_weight_num, 
@@ -36,6 +38,11 @@ module sa #(
     // 底部有效令牌输出: 每列 1-bit，总位宽 = COLS
     output wire [COLS-1 : 0]      bottom_valid_out 
 );
+    // 计算实际需要的门控组数
+    localparam COL_GROUPS = (COLS - 1) / 4 + 1;
+    // 门控时钟内部信号定义
+    wire [COL_GROUPS-1:0] cg_en_group;
+    wire [COL_GROUPS-1:0] gated_clk;
 
     // ==========================================
     // 1. 内部连线网 (Wire Mesh) 定义
@@ -54,6 +61,27 @@ module sa #(
     wire [3:0]  weight_group_wire [0:ROWS-1][0:COLS-1];
 
     // ==========================================
+    // 1. 动态生成 ICG 时钟门控网络
+    // ==========================================
+    genvar i;
+    generate
+        for (i = 0; i < COL_GROUPS; i = i + 1) begin : gen_icg
+            // 组合门控使能：只有全局 busy 且 该组被开启时，才输出时钟
+            assign cg_en_group[i] = npu_busy & col_group_en[i];
+            `ifdef FPGA
+                BUFGCE u_icg (.O(gated_clk[i]), .I(clk), .CE(cg_en_group[i]));
+            `else
+                // 例化自定义的无毛刺门控单元
+                my_icg u_icg (
+                    .clk_in  (clk),
+                    .enable  (cg_en_group[i]),
+                    .clk_out (gated_clk[i])
+                );
+            `endif
+        end
+    endgenerate
+
+    // ==========================================
     // 2. 核心 RxC 脉动阵列例化与缝合
     // ==========================================
     genvar r, c;
@@ -65,7 +93,7 @@ module sa #(
             localparam MY_WEIGHT_GROUP = r / 4; 
             
             for (c = 0; c < COLS; c = c + 1) begin : COL
-                
+                wire pe_clk = gated_clk[c / 4];
                 // ----------------------------------------------------
                 // A. 结构级判定：处理水平激活数据流 (act_in, act_valid)
                 // ----------------------------------------------------
@@ -114,7 +142,7 @@ module sa #(
                     // 将计算好的本行专属 Group 号作为参数传入 PE
                     .MY_GROUP       (MY_WEIGHT_GROUP) 
                 ) u_pe (
-                    .clk            (clk),
+                    .clk            (pe_clk),
                     .rst_n          (rst_n),
                     
                     // 配置流  此参数感觉也可以用流动的方式写入
@@ -147,7 +175,6 @@ module sa #(
     // 3. 引出阵列底部的最终计算结果
     // ==========================================
     generate
-        genvar i;
         for (i = 0; i < COLS; i = i + 1) begin : OUT_ASSIGN
             // 将最后一排 (r = ROWS - 1) 的 psum_out 拼接成超宽总线传给外部
             assign bottom_psum_out[(i*32)+31 : i*32] = psum_wire[ROWS-1][i];

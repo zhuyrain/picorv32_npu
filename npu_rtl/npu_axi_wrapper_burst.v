@@ -86,9 +86,10 @@ module npu_axi_wrapper_burst #(
     reg [31:0] reg_bias_base;      // 0x0C: 偏置首地址
     reg [31:0] reg_out_base;       // 0x10: 结果写回首地址
     reg [31:0] reg_cfg_img_dim;    // 0x14: [31:16] H, [15:0] W
-    reg [31:0] reg_cfg_channels;   // 0x18: [31:16] Out_CH, [15:0] In_CH
+    reg [31:0] reg_cfg_channels;   // 0x18: [31:16] row_word_count, [15:0] weight_word_count
     reg [31:0] reg_cfg_quant;      // 0x1C: [31:16] Shift, [15:0] Multiplier
-    reg [31:0] reg_cfg_datapath;   // 0x20: [31:18] out_stride, [17:10] weight_num, [9:4] line_width, [2:0] ic_groups
+    reg [31:0] reg_cfg_datapath;  // 0x20: [31:22] out_stride, [21:18] lb_ic_groups_r, [17:10] sa_weight_num, [9:4] lb_line_width, [3:0] lb_ic_groups (Write)
+    reg [31:0] reg_cfg_datapath2; // 0x24: [31:24] RSV, [23:16] cfg_oc_num, [15:0] sa_col_group_en (1 bit per 4 cols)
 
     // 内部控制信号提取
     wire        npu_start_pulse   = reg_ctrl_status[0]; 
@@ -105,6 +106,8 @@ module npu_axi_wrapper_burst #(
     wire [7:0]  sa_cfg_weight_num = reg_cfg_datapath[17:10];
     wire [5:0]  lb_cfg_line_width = reg_cfg_datapath[9:4];
     wire [3:0]  lb_cfg_ic_groups  = reg_cfg_datapath[3:0]; //写入时必须以总线位宽写入，因此输入通道组数会更多
+    wire [7:0]  cfg_oc_num        = reg_cfg_datapath2[23:16]; //输出通道数配置信号
+    wire [15:0] sa_col_group_en   = reg_cfg_datapath2[15:0];  //门控时钟使能配置信号
 
     wire [31:0] current_status = {29'd0, reg_ctrl_status[2], npu_busy, 1'b0};
 
@@ -135,6 +138,7 @@ module npu_axi_wrapper_burst #(
             reg_cfg_channels <= 32'd0;
             reg_cfg_quant    <= 32'd0;
             reg_cfg_datapath <= 32'd0;
+            reg_cfg_datapath2<= 32'd0;
 
             s_aw_ready_reg   <= 1'b1;
             s_w_ready_reg    <= 1'b1;
@@ -189,6 +193,7 @@ module npu_axi_wrapper_burst #(
                     6'd6: reg_cfg_channels <= s_w_data_reg;
                     6'd7: reg_cfg_quant    <= s_w_data_reg;
                     6'd8: reg_cfg_datapath <= s_w_data_reg;
+                    6'd9: reg_cfg_datapath2<= s_w_data_reg;
                     default: ; // 忽略越界写入
                 endcase
 
@@ -239,6 +244,7 @@ module npu_axi_wrapper_burst #(
                     6'd6: s_r_data_reg <= reg_cfg_channels;
                     6'd7: s_r_data_reg <= reg_cfg_quant;
                     6'd8: s_r_data_reg <= reg_cfg_datapath;
+                    6'd8: s_r_data_reg <= reg_cfg_datapath2;
                     default: s_r_data_reg <= 32'hDEADBEEF; 
                 endcase
                 
@@ -339,6 +345,8 @@ module npu_axi_wrapper_burst #(
     ) u_sa (
         .clk              (clk),
         .rst_n            (rst_n),
+        .npu_busy         (npu_busy),
+        .col_group_en     (sa_col_group_en),
         .cfg_weight_num   (sa_cfg_weight_num),
         .weight_en        (sa_weight_en),
         .left_act_in      (act_out_skewed),
@@ -449,7 +457,7 @@ module npu_axi_wrapper_burst #(
     // =========================================================
     // Act_Row 一行需要读取的 32-bit word 数：img_w * ic_groups
 
-    wire [7:0] cfg_oc_num = SYS_COLS;
+    // wire [7:0] cfg_oc_num = SYS_COLS;
     // wire [15:0] row_word_count = cfg_img_w * ({13'd0,   } + 1);
     
     // Bias 仅需读取实际的输出通道数 (cfg_oc_num)
@@ -1057,6 +1065,7 @@ module npu_axi_wrapper_burst #(
                             if (wr_words_left == 16'd0) begin
                                 // 整个超级像素全部写完！
                                 // 【核心物理补偿】：补偿本像素内累加的偏移，加上 out_stride 跳向下个像素的起点！
+                                // 因为涉及到多轮NPU启动计算一次CONV，所以out_stride并不等于cfg_oc_num
                                 out_ptr  <= out_ptr + {22'd0, out_stride} - {24'd0, cfg_oc_num};
                                 if(fifo_empty) begin
                                     wr_state <= 2'd0; // 回去等下一个像素
