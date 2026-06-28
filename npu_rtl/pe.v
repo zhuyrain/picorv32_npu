@@ -2,7 +2,8 @@
 
 module pe #(
     // 物理层面上焊死的最大权重容量（支持第二层的 36 个，甚至可以改得更大）
-    parameter MAX_WEIGHTS = 36  
+    parameter MAX_WEIGHTS = 36,
+    parameter MY_GROUP    = 0 //属于哪一个行组
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -17,7 +18,9 @@ module pe #(
     // 1. 控制与数据驱动令牌 (Tokens)
     // ==========================================
     input  wire        weight_en_in,
+    input  wire [3:0]  weight_group_in,
     output reg         weight_en_out,
+    output reg  [3:0]  weight_group_out,
     
     input  wire        act_valid_in,   // 伴随激活值的数据有效令牌
     output reg         act_valid_out,  // 传递给下一列
@@ -78,6 +81,7 @@ module pe #(
             act_valid_out <= 1'b0;
             psum_out      <= 32'd0;
             weight_en_out <= 1'b0;
+            weight_group_out <= 4'd0;
             weight_out    <= 32'd0;
             
             wr_weight_idx <= 8'd0; // 写指针复位
@@ -92,18 +96,23 @@ module pe #(
             weight_en_out <= weight_en_in;
             act_out       <= act_in;
             act_valid_out <= act_valid_in;
-            
+            weight_group_out <= weight_group_in;
             // --- 2. 权重配置态 (独立控制 写指针) ---
             if (weight_en_in) begin
-                // 将低 8 位写进 Cow Buffer
-                weight_buf[wr_weight_idx] <= $signed(weight_in[7:0]);
-                weight_out <= {8'd0, weight_in[31:8]};
-                
-                // 写指针根据外部配置的动态边界进行环形自增
-                if (wr_weight_idx == cfg_weight_num - 1)
-                    wr_weight_idx <= 8'd0;
-                else
-                    wr_weight_idx <= wr_weight_idx + 8'd1;
+                if (weight_group_in == MY_GROUP) begin
+                    // 将低 8 位写进 Cow Buffer
+                    weight_buf[wr_weight_idx] <= $signed(weight_in[7:0]);
+                    weight_out <= {8'd0, weight_in[31:8]};
+                    
+                    // 写指针根据外部配置的动态边界进行环形自增
+                    if (wr_weight_idx == cfg_weight_num - 1)
+                        wr_weight_idx <= 8'd0;
+                    else
+                        wr_weight_idx <= wr_weight_idx + 8'd1;
+                end else begin
+                    weight_out <= weight_in;
+                end
+
             end 
             
             // --- 3. 数据驱动计算态 (独立控制 读指针) ---

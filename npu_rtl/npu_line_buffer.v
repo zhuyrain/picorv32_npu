@@ -3,7 +3,7 @@
 module npu_line_buffer #(
     parameter MAX_LINE_WIDTH = 34, // 物理预留的最大行宽 (例如第一层 32+2=34)
     parameter PAD_SIZE       = 1,  // 左右 Padding 长度
-    parameter MAX_IC_GROUPS  = 16,// 物理预留的最大位宽 (对应 IC=16 时为 128-bit)
+    parameter MAX_IC_GROUPS  = 4,// 物理预留的最大位宽 (对应 IC=16 时为 128-bit)
     parameter DATA_WIDTH = 32      // PE一次吃入位宽     (4 PE时为 32-bit)
 )(
     input  wire                  clk,
@@ -20,7 +20,7 @@ module npu_line_buffer #(
     // =======================================================
     input  wire                  shift_line_en,      // 换行滚动
     input  wire                  pixel_wr_en,    // 收到 1 拍 AXI 32-bit 数据
-    input  wire [DATA_WIDTH-1:0] pixel_wr_data,  // 永远是 32-bit AXI 接口！
+    input  wire [31:0]           pixel_wr_data,  // 永远是 32-bit AXI 接口！
 
     // =======================================================
     // 3. NPU 阵列滑动窗口提取接口 (Read Port - 永远吐 32-bit)
@@ -32,9 +32,9 @@ module npu_line_buffer #(
     input  wire [1:0]            kernel_ky,      // 窗口内 Y 偏移 (0~2)
     input  wire [3:0]            read_ic_group,  // 阵列当前在算第几组通道？(0~3)
     // 提取出的单像素输出 (喂给脉动阵列 left_act_in)
-    output reg  [DATA_WIDTH-1:0] window_pixel_out// 喂给阵列的 32-bit 结果
+    output reg  [DATA_WIDTH-1:0] window_pixel_out// 喂给PE阵列的结果
 );
-    localparam MAX_DATA_WIDTH = DATA_WIDTH * MAX_IC_GROUPS;
+    localparam MAX_DATA_WIDTH = 32 * MAX_IC_GROUPS; //32是一次AXI读取位宽
     
     // -----------------------------------------------------------
     // 核心物理存储：按最大规格铺设 (128-bit * 34)

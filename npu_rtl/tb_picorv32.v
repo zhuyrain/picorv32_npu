@@ -21,9 +21,36 @@ module tb_picorv32;
     end
 
     initial begin
-        $dumpfile("picorv32_soc.vcd");
-        $dumpvars(0, tb_picorv32); // 抓取所有层级的信号
+        // ==========================================
+        // 兼容多平台的波形 Dump 写法
+        // ==========================================
+    `ifdef VCS // 用 VCS 编译时，VCS 会自动预定义这个宏
+        // $display("Dumping FSDB wave...");
+        // $fsdbDumpfile("picorv32_soc.fsdb"); // 也可以不写，Makefile 里的 +fsdbfile+ 已经做了重定向
+        // $fsdbDumpvars(0, tb_picorv32);      // 0 表示记录该层级及其下所有层级的信号
+        // $fsdbDumpMDA(1000);                 // 配合 +fsdb+mda 记录多维数组（SRAM、寄存器堆内部变量），深度设大一点
+        $display("Dumping FSDB wave...");
+        $fsdbDumpfile("picorv32_soc.fsdb");
+        
+        // 1. 普通信号：依然保持只看顶层或 wrapper (Level = 1 或 2)
+        $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper);
+        $fsdbDumpvars(1, tb_picorv32); // 也可以把 CPU 外围总线带上
+        
+        // 2. [核心修改] 数组信号：不全局 Dump！只指向真正关心的数组实体
+        // 比如想看 AXI SRAM 的内部数据：
+        // 参数含义：(深度, 指定模块名)
+        // $fsdbDumpMDA(1, tb_picorv32.u_sram); 
+        
+        // 如果想看某个特定的 Line Buffer：
+        // $fsdbDumpMDA(1, tb_picorv32.u_npu_wrapper.u_lb);
+    `else
+        // // 兼容 iverilog
+        // $dumpfile("picorv32_soc.vcd");
+        // $dumpvars(0, tb_picorv32);
+    `endif
+    end
 
+    initial begin
         // 严格复位序列 (消除 X 态)
         resetn = 0;
         #100;
@@ -122,13 +149,16 @@ module tb_picorv32;
     wire [ 1:0] npu_m_rresp;
     wire        npu_m_rlast;
 
+    // NPU IRQ SIGNAL
+    wire npu_done_level;
     // =========================================================================
     // 3. 例化核心 CPU (PicoRV32 Master)
     // =========================================================================
     picorv32_axi #(
         .COMPRESSED_ISA(1),    
         .ENABLE_FAST_MUL(1),   
-        .ENABLE_DIV(1)         
+        .ENABLE_DIV(1),
+        .ENABLE_IRQ(1)
     ) cpu_core (
         .clk            (clk),
         .resetn         (resetn),
@@ -141,7 +171,7 @@ module tb_picorv32;
         .mem_axi_arvalid(cpu_arvalid), .mem_axi_arready(cpu_arready), .mem_axi_araddr (cpu_araddr), .mem_axi_arprot (cpu_arprot),
         .mem_axi_rvalid (cpu_rvalid),  .mem_axi_rready (cpu_rready),  .mem_axi_rdata  (cpu_rdata),  /* PicoRV32 不接 rresp */
 
-        .irq(32'b0), .pcpi_wr(1'b0), .pcpi_rd(32'b0), .pcpi_wait(1'b0), .pcpi_ready(1'b0)
+        .irq({27'b0, npu_done_level, 4'b0}), .pcpi_wr(1'b0), .pcpi_rd(32'b0), .pcpi_wait(1'b0), .pcpi_ready(1'b0)
     );
 
     // =========================================================================
@@ -190,9 +220,9 @@ module tb_picorv32;
                     
                     // 依据 wstrb，小端序依次打印，把被编译器合并的字符全抠出来
                     if (final_wstrb[0]) $write("%c", final_wdata[7:0]);
-                    if (final_wstrb[1]) $write("%c", final_wdata[15:8]);
-                    if (final_wstrb[2]) $write("%c", final_wdata[23:16]);
-                    if (final_wstrb[3]) $write("%c", final_wdata[31:24]);
+                    // if (final_wstrb[1]) $write("%c", final_wdata[15:8]);
+                    // if (final_wstrb[2]) $write("%c", final_wdata[23:16]);
+                    // if (final_wstrb[3]) $write("%c", final_wdata[31:24]);
                     
                     $fflush();
                 end
@@ -284,10 +314,14 @@ module tb_picorv32;
     // =========================================================================
     // 6. 例化 NPU 异构加速子系统
     // =========================================================================
-    npu_axi_wrapper_burst u_npu_wrapper (
+    npu_axi_wrapper_burst #(
+        .SYS_ROWS(64), 
+        .SYS_COLS(64)
+    ) u_npu_wrapper (
         .clk            (clk), 
         .rst_n          (resetn),
-        
+        // NPU IRQ SIGNAL
+        .npu_done_level (npu_done_level),
         // ==========================================================
         // Slave 配置接口：接 CPU 互联矩阵的 S1
         // ==========================================================

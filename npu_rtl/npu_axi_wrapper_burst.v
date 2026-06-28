@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
 module npu_axi_wrapper_burst #(
-    // 物理阵列规模参数 (默认 4，可被顶层覆盖为 32)
+    // 物理阵列规模参数 (默认 4，可被顶层覆盖)
     parameter SYS_ROWS = 4, 
     parameter SYS_COLS = 4,
     // 自动计算所需的计数器位宽
@@ -9,7 +9,8 @@ module npu_axi_wrapper_burst #(
 )(
     input  wire         clk,
     input  wire         rst_n,
-
+    // NPU IRQ SIGNAL
+    output wire npu_done_level,
     // ==========================================
     // 1. AXI4-Lite Slave 接口 (连接到 CPU/总线矩阵)
     // CPU 通过该接口配置 NPU 寄存器
@@ -86,14 +87,16 @@ module npu_axi_wrapper_burst #(
     reg [31:0] reg_bias_base;      // 0x0C: 偏置首地址
     reg [31:0] reg_out_base;       // 0x10: 结果写回首地址
     reg [31:0] reg_cfg_img_dim;    // 0x14: [31:16] H, [15:0] W
-    reg [31:0] reg_cfg_channels;   // 0x18: [31:16] Out_CH, [15:0] In_CH
+    reg [31:0] reg_cfg_channels;   // 0x18: [31:16] row_word_count, [15:0] weight_word_count
     reg [31:0] reg_cfg_quant;      // 0x1C: [31:16] Shift, [15:0] Multiplier
-    reg [31:0] reg_cfg_datapath;   // 0x20: [31:18] out_stride, [17:10] weight_num, [9:4] line_width, [2:0] ic_groups
+    reg [31:0] reg_cfg_datapath;  // 0x20: [31:22] out_stride, [21:18] lb_ic_groups_r, [17:10] sa_weight_num, [9:4] lb_line_width, [3:0] lb_ic_groups (Write)
+    reg [31:0] reg_cfg_datapath2; // 0x24: [31:24] RSV, [23:16] cfg_oc_num, [15:0] sa_col_group_en (1 bit per 4 cols)
 
     // 内部控制信号提取
     wire        npu_start_pulse   = reg_ctrl_status[0]; 
     reg         npu_busy;                             
-    reg         npu_done_pulse;                             
+    reg         npu_done_pulse;
+    assign      npu_done_level    = reg_ctrl_status[2];                            
 
     // 提取配置字段供内部 Datapath 和 FSM 使用
     wire [15:0] cfg_img_h         = reg_cfg_img_dim[31:16];
@@ -105,6 +108,8 @@ module npu_axi_wrapper_burst #(
     wire [7:0]  sa_cfg_weight_num = reg_cfg_datapath[17:10];
     wire [5:0]  lb_cfg_line_width = reg_cfg_datapath[9:4];
     wire [3:0]  lb_cfg_ic_groups  = reg_cfg_datapath[3:0]; //写入时必须以总线位宽写入，因此输入通道组数会更多
+    wire [7:0]  cfg_oc_num        = reg_cfg_datapath2[23:16]; //输出通道数配置信号
+    wire [15:0] sa_col_group_en   = reg_cfg_datapath2[15:0];  //门控时钟使能配置信号
 
     wire [31:0] current_status = {29'd0, reg_ctrl_status[2], npu_busy, 1'b0};
 
@@ -135,6 +140,7 @@ module npu_axi_wrapper_burst #(
             reg_cfg_channels <= 32'd0;
             reg_cfg_quant    <= 32'd0;
             reg_cfg_datapath <= 32'd0;
+            reg_cfg_datapath2<= 32'd0;
 
             s_aw_ready_reg   <= 1'b1;
             s_w_ready_reg    <= 1'b1;
@@ -189,6 +195,7 @@ module npu_axi_wrapper_burst #(
                     6'd6: reg_cfg_channels <= s_w_data_reg;
                     6'd7: reg_cfg_quant    <= s_w_data_reg;
                     6'd8: reg_cfg_datapath <= s_w_data_reg;
+                    6'd9: reg_cfg_datapath2<= s_w_data_reg;
                     default: ; // 忽略越界写入
                 endcase
 
@@ -239,6 +246,7 @@ module npu_axi_wrapper_burst #(
                     6'd6: s_r_data_reg <= reg_cfg_channels;
                     6'd7: s_r_data_reg <= reg_cfg_quant;
                     6'd8: s_r_data_reg <= reg_cfg_datapath;
+                    6'd8: s_r_data_reg <= reg_cfg_datapath2;
                     default: s_r_data_reg <= 32'hDEADBEEF; 
                 endcase
                 
@@ -287,6 +295,18 @@ module npu_axi_wrapper_burst #(
     wire [SYS_COLS*8-1:0]  deskewed_data_out;
     wire                   deskewed_valid_out;
 
+    reg [3:0] weight_row_group_cnt; // 与输入通道组数位宽位宽相同
+    reg [7:0] weight_num_cnt; // 与每个PE配置的权重个数相同
+    
+    reg [1:0]  wr_state;
+    reg [15:0] wr_words_left;  // 当前像素还有多少个 32-bit word 没发完
+    reg [7:0]  pixel_word_idx; // 用于动态切片 fifo_rd_data 的索引
+    reg [7:0]  w_beats_left;   // 当前这一笔物理 Burst 还要发几拍
+    reg        aw_done;
+
+    // 提供给主状态机的标志位
+    wire write_fsm_idle = (wr_state == 2'd0);
+
     npu_line_buffer #(
         .MAX_LINE_WIDTH(34), 
         .PAD_SIZE(1), 
@@ -327,11 +347,14 @@ module npu_axi_wrapper_burst #(
     ) u_sa (
         .clk              (clk),
         .rst_n            (rst_n),
+        .npu_busy         (npu_busy),
+        .col_group_en     (sa_col_group_en),
         .cfg_weight_num   (sa_cfg_weight_num),
         .weight_en        (sa_weight_en),
         .left_act_in      (act_out_skewed),
         .left_act_valid   (act_valid_out_skewed),
         .top_weight_in    (sa_top_weight_in),
+        .weight_row_group (weight_row_group_cnt),
         .top_bias_in      ({(SYS_COLS*32){1'b0}}), // 动态适配填 0
         .bottom_psum_out  (sa_bottom_psum_out),
         .bottom_valid_out (sa_bottom_valid_out)
@@ -343,7 +366,7 @@ module npu_axi_wrapper_burst #(
     ) u_acc (
         .clk             (clk),
         .rst_n           (rst_n),
-        .cfg_window_size ({sa_cfg_weight_num}), // 固定拍数一个窗口
+        .cfg_window_size (sa_cfg_weight_num), // 固定拍数一个窗口
         .preload_bias    (acc_preload_bias),
         .bottom_valid_in (sa_bottom_valid_out),
         .bias_in         (acc_bias_in),
@@ -389,14 +412,14 @@ module npu_axi_wrapper_burst #(
 
     npu_sync_fifo #(
         .DATA_WIDTH(SYS_COLS * 8), // 自动计算！(4x4=32bit, 32x32=256bit)
-        .ADDR_WIDTH(4), 
-        .ALMOST_FULL_THRESH(12)
+        .ADDR_WIDTH(6), 
+        .ALMOST_FULL_THRESH(32)
     ) u_out_fifo (
         .clk        (clk),
         .rst_n      (rst_n),
         .wr_en      (deskewed_valid_out), 
         .wr_data    (deskewed_data_out),
-        .rd_en      (m_axi_wready && m_axi_wvalid), // 【见下文提示】
+        .rd_en      (m_axi_wvalid && m_axi_wready && m_axi_wlast && (wr_words_left == 16'd0)), // 【见下文提示】
         .rd_data    (fifo_rd_data),
         .empty      (fifo_empty),
         .full       (fifo_full),
@@ -423,11 +446,12 @@ module npu_axi_wrapper_burst #(
     reg [31:0] pf_act_ptr, weight_ptr, bias_ptr, out_ptr;
     
     reg [PC_W-1:0] pack_cnt;         // 自动推导位宽的轮询计数器
+
     reg [15:0]     pixel_cnt;
     reg [2:0]      ig_cnt;           
     reg [15:0]     drain_cnt;        
 
-    reg        ar_done, aw_done;
+    reg        ar_done;
     reg        first_row_loaded;
 
     // =========================================================
@@ -435,8 +459,8 @@ module npu_axi_wrapper_burst #(
     // =========================================================
     // Act_Row 一行需要读取的 32-bit word 数：img_w * ic_groups
 
-    wire [7:0] cfg_oc_num = 4;
-    // wire [15:0] row_word_count = cfg_img_w * ({13'd0, lb_cfg_ic_groups } + 1);
+    // wire [7:0] cfg_oc_num = SYS_COLS;
+    // wire [15:0] row_word_count = cfg_img_w * ({13'd0,   } + 1);
     
     // Bias 仅需读取实际的输出通道数 (cfg_oc_num)
     wire [15:0] bias_word_count = {8'd0, cfg_oc_num};
@@ -486,9 +510,20 @@ module npu_axi_wrapper_burst #(
     assign m_axi_arsize  = bus_owner_is_pf ? pf_arsize  : master_arsize;  // 4 bytes / beat
     assign m_axi_arburst = bus_owner_is_pf ? pf_arburst : master_arburst; // INCR
 
+    // ==========================================
+    // 异步预取机制的握手信号
+    // ==========================================
+    reg req_load_row;  // 主状态机发出请求 (翻转即请求)
+    reg ack_load_row;  // 预取状态机回应   (追平即完成)
+
     // =========================================================
     // 动态 4KB 切片计算器 (支持总线仲裁路由)
     // =========================================================
+    // 独立的三组剩余量寄存器
+    reg [15:0] bias_words_left;
+    reg [15:0] weight_words_left;
+    reg [15:0] pf_row_words_left;
+
     // 核心路由 1：MUX 当前指针 (加入了 bus_owner_is_pf 判断)
     wire [31:0] current_read_ptr = 
         (bus_owner_is_pf)        ? pf_act_ptr : 
@@ -519,11 +554,6 @@ module npu_axi_wrapper_burst #(
     // 4. AXI AxLEN = beats - 1
     wire [7:0] safe_arlen = safe_burst_words[7:0] - 8'd1;
 
-    // 独立的三组剩余量寄存器
-    reg [15:0] bias_words_left;
-    reg [15:0] weight_words_left;
-    reg [15:0] pf_row_words_left;
-
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= S_IDLE;
@@ -532,11 +562,12 @@ module npu_axi_wrapper_burst #(
             npu_done_pulse <= 1'b0;
 
             ar_done <= 1'b0;
-            aw_done <= 1'b0;
             // w_done  <= 1'b0;
 
             act_valid_in     <= 1'b0;
             sa_weight_en     <= 1'b0;
+            weight_row_group_cnt <= 4'd0;
+            weight_num_cnt <= 8'd0;
             lb_shift_line_en <= 1'b0;
             acc_preload_bias <= 1'b0;
 
@@ -571,7 +602,6 @@ module npu_axi_wrapper_burst #(
                     npu_busy <= 1'b0;
 
                     ar_done <= 1'b0;
-                    aw_done <= 1'b0;
                     // w_done  <= 1'b0;
 
                     first_row_loaded <= 1'b0;
@@ -649,6 +679,8 @@ module npu_axi_wrapper_burst #(
                                 if (bias_words_left == 16'd0) begin
                                     acc_preload_bias <= 1'b1;
                                     weight_words_left<= weight_word_count;
+                                    weight_row_group_cnt <= lb_cfg_ic_groups;
+                                    weight_num_cnt   <= sa_cfg_weight_num - 1;
                                     pack_cnt         <= 0; // 为权重加载状态提前清零
                                     state            <= S_LOAD_WEIGHT;
                                 end
@@ -689,6 +721,17 @@ module npu_axi_wrapper_burst #(
                             // 动态截断：读到配置的实际通道数就结束一轮！不再是写死的 3'd3！
                             if (pack_cnt == cfg_oc_num - 1'b1) begin
                                 sa_weight_en <= 1'b1;
+                                if (weight_num_cnt == sa_cfg_weight_num - 1) begin
+                                    if ( weight_row_group_cnt == lb_cfg_ic_groups) begin
+                                        weight_row_group_cnt <= 0;
+                                    end else begin
+                                        weight_row_group_cnt <= weight_row_group_cnt + 1;
+                                    end
+                                    // 【核心修复】：别忘了把空间计数器复位！否则它会一直加上去
+                                    weight_num_cnt <= 0; 
+                                end else begin
+                                    weight_num_cnt <= weight_num_cnt + 1;
+                                end
                                 pack_cnt     <= 0; // 轮询归零，完美无气泡
                             end else begin
                                 pack_cnt     <= pack_cnt + 1;
@@ -892,17 +935,32 @@ module npu_axi_wrapper_burst #(
     end
     // =========================================================
     // [模块 4]: 独立运行的 AXI 写回状态机 (Backend Write FSM)
+    // 支持 4KB 动态切片与任意 cfg_oc_num 参数化
     // =========================================================
-    reg [1:0] wr_state;
-    // 状态定义: W_IDLE(0), W_AW(1), W_W(2), W_B(3)
 
-    // 提供给主状态机的标志位
-    wire write_fsm_idle = (wr_state == 2'd0);
+    // =========================================================
+    // 写通道专用的动态 4KB 切片计算器
+    // =========================================================
+    // 1. 距离下一个 4KB 边界还有多少个 32-bit Word
+    wire [15:0] wr_words_to_4kb = 16'd1024 - {6'd0, out_ptr[11:2]};
+
+    // 2. AXI4 单笔 burst 最多 256 beats，并且不能超过本像素剩余的 word 数
+    wire [15:0] safe_wr_burst_cap = (wr_words_left > 16'd256) ? 16'd256 : wr_words_left;
+
+    // 3. 终极裁决：同时避免跨 4KB 边界与超越本像素剩余量
+    wire [15:0] safe_wr_burst_words = (safe_wr_burst_cap > wr_words_to_4kb) ? wr_words_to_4kb : safe_wr_burst_cap;
+
+    // 4. AXI AWLEN = beats - 1
+    wire [7:0] safe_awlen = safe_wr_burst_words[7:0] - 8'd1;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            wr_state <= 2'd0;
-            out_ptr  <= 32'd0;
+            wr_state       <= 2'd0;
+            out_ptr        <= 32'd0;
+            wr_words_left  <= 16'd0;
+            pixel_word_idx <= 8'd0;
+            w_beats_left   <= 8'd0;
+            aw_done        <= 1'b0;
 
             m_axi_awaddr  <= 32'd0;
             m_axi_awlen   <= 8'd0;
@@ -918,9 +976,9 @@ module npu_axi_wrapper_burst #(
             m_axi_bready  <= 1'b0;
         end else begin
             if (npu_start_pulse) begin
-                out_ptr <= reg_out_base;
-
-                wr_state <= 2'd0;
+                out_ptr       <= reg_out_base;
+                wr_state      <= 2'd0;
+                aw_done       <= 1'b0;
 
                 m_axi_awvalid <= 1'b0;
                 m_axi_wvalid  <= 1'b0;
@@ -930,68 +988,98 @@ module npu_axi_wrapper_burst #(
                 case (wr_state)
 
                     // --------------------------------------------------
-                    // W_IDLE:
-                    // FIFO 里有数据就发起 single-beat AXI write burst。
+                    // W_IDLE: 初始化像素发送任务
                     // --------------------------------------------------
                     2'd0: begin
                         if (!fifo_empty) begin
-                            m_axi_awaddr  <= out_ptr;
-                            m_axi_awlen   <= 8'd0;      // single-beat
-                            m_axi_awsize  <= 3'd2;      // 4 bytes / beat
-                            m_axi_awburst <= 2'b01;     // INCR
-                            m_axi_awvalid <= 1'b1;
-
-                            wr_state <= 2'd1;
+                            // 初始化要发的 word 数量 (cfg_oc_num 除以 4)
+                            wr_words_left  <= {8'd0, cfg_oc_num[7:2]}; 
+                            pixel_word_idx <= 8'd0;
+                            aw_done        <= 1'b0;
+                            wr_state       <= 2'd1;
                         end
                     end
 
                     // --------------------------------------------------
-                    // W_AW:
-                    // 等待 AW 握手。你的 hybrid SRAM Port B 是先 AW 后 W，
-                    // 所以 AW 完成后再发 W 是匹配的。
+                    // W_AW: 动态切片并扣除剩余量
                     // --------------------------------------------------
                     2'd1: begin
-                        if (m_axi_awvalid && m_axi_awready) begin
-                            m_axi_awvalid <= 1'b0;
+                        if (!aw_done) begin
+                            if (m_axi_awvalid && m_axi_awready) begin
+                                m_axi_awvalid <= 1'b0;
+                                aw_done       <= 1'b1;
 
-                            m_axi_wdata   <= fifo_rd_data;
-                            m_axi_wstrb   <= 4'b1111;
-                            m_axi_wlast   <= 1'b1;
-                            m_axi_wvalid  <= 1'b1;
+                                // 【先知结算】：提前更新地址和剩余量！
+                                out_ptr       <= out_ptr + (({24'd0, safe_awlen} + 32'd1) << 2);
+                                wr_words_left <= wr_words_left - ({8'd0, safe_awlen} + 16'd1);
+                                w_beats_left  <= safe_awlen;
 
-                            wr_state <= 2'd2;
+                                // 【准备首拍数据】：通过索引动态切片 FIFO 宽总线
+                                m_axi_wvalid  <= 1'b1;
+                                m_axi_wdata   <= fifo_rd_data[pixel_word_idx * 32 +: 32];
+                                m_axi_wstrb   <= 4'b1111;
+                                m_axi_wlast   <= (safe_awlen == 8'd0) ? 1'b1 : 1'b0;
+
+                                wr_state      <= 2'd2;
+                            end else begin
+                                m_axi_awvalid <= 1'b1;
+                                m_axi_awaddr  <= out_ptr;
+                                m_axi_awlen   <= safe_awlen; 
+                                m_axi_awsize  <= 3'd2;      
+                                m_axi_awburst <= 2'b01;     
+                            end
                         end
                     end
 
                     // --------------------------------------------------
-                    // W_W:
-                    // single-beat 写数据。
-                    // FIFO 的 rd_en = m_axi_wvalid && m_axi_wready，
-                    // 所以 W 握手成功时 FIFO 自动弹出当前 word。
+                    // W_W: 连续发送 W 通道
                     // --------------------------------------------------
                     2'd2: begin
                         if (m_axi_wvalid && m_axi_wready) begin
-                            m_axi_wvalid <= 1'b0;
-                            m_axi_wlast  <= 1'b0;
-                            m_axi_wstrb  <= 4'b0000;
+                            // 物理指针对位前进
+                            pixel_word_idx <= pixel_word_idx + 8'd1;
 
-                            m_axi_bready <= 1'b1;
+                            if (m_axi_wlast) begin
+                                // 最后一拍握手成功，关闭 W 通道
+                                m_axi_wvalid <= 1'b0;
+                                m_axi_wlast  <= 1'b0;
+                                m_axi_wstrb  <= 4'b0000;
 
-                            wr_state <= 2'd3;
+                                m_axi_bready <= 1'b1;
+                                wr_state     <= 2'd3;
+                            end else begin
+                                // 准备下一拍
+                                m_axi_wdata  <= fifo_rd_data[(pixel_word_idx + 8'd1) * 32 +: 32];
+                                m_axi_wlast  <= (w_beats_left == 8'd1) ? 1'b1 : 1'b0;
+                                w_beats_left <= w_beats_left - 8'd1;
+                            end
                         end
                     end
 
                     // --------------------------------------------------
-                    // W_B:
-                    // 等待写响应。
+                    // W_B: 接收响应与后续决策
                     // --------------------------------------------------
                     2'd3: begin
                         if (m_axi_bvalid && m_axi_bready) begin
                             m_axi_bready <= 1'b0;
+                            aw_done      <= 1'b0; // 准备为下一次 AW 握手清零
 
-                            out_ptr <= out_ptr + out_stride;
-
-                            wr_state <= 2'd0;
+                            if (wr_words_left == 16'd0) begin
+                                // 整个超级像素全部写完！
+                                // 【核心物理补偿】：补偿本像素内累加的偏移，加上 out_stride 跳向下个像素的起点！
+                                // 因为涉及到多轮NPU启动计算一次CONV，所以out_stride并不等于cfg_oc_num
+                                out_ptr  <= out_ptr + {22'd0, out_stride} - {24'd0, cfg_oc_num};
+                                if(fifo_empty) begin
+                                    wr_state <= 2'd0; // 回去等下一个像素
+                                end else begin
+                                    wr_words_left  <= {8'd0, cfg_oc_num[7:2]}; 
+                                    pixel_word_idx <= 8'd0;
+                                    wr_state <= 2'd1;
+                                end
+                            end else begin
+                                // 被 4KB 边界切断，当前像素还没发完，回去继续发剩余部分！
+                                wr_state <= 2'd1;
+                            end
                         end
                     end
 
@@ -1002,12 +1090,6 @@ module npu_axi_wrapper_burst #(
             end
         end
     end
-
-    // ==========================================
-    // 异步预取机制的握手信号
-    // ==========================================
-    reg req_load_row;  // 主状态机发出请求 (翻转即请求)
-    reg ack_load_row;  // 预取状态机回应   (追平即完成)
 
     // 预取状态机定义
     localparam PF_IDLE = 2'd0;
