@@ -9,7 +9,8 @@ module npu_axi_wrapper_burst #(
 )(
     input  wire         clk,
     input  wire         rst_n,
-
+    // NPU IRQ SIGNAL
+    output wire npu_done_level,
     // ==========================================
     // 1. AXI4-Lite Slave 接口 (连接到 CPU/总线矩阵)
     // CPU 通过该接口配置 NPU 寄存器
@@ -94,7 +95,8 @@ module npu_axi_wrapper_burst #(
     // 内部控制信号提取
     wire        npu_start_pulse   = reg_ctrl_status[0]; 
     reg         npu_busy;                             
-    reg         npu_done_pulse;                             
+    reg         npu_done_pulse;
+    assign      npu_done_level    = reg_ctrl_status[2];                            
 
     // 提取配置字段供内部 Datapath 和 FSM 使用
     wire [15:0] cfg_img_h         = reg_cfg_img_dim[31:16];

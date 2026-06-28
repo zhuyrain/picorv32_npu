@@ -149,13 +149,16 @@ module tb_picorv32;
     wire [ 1:0] npu_m_rresp;
     wire        npu_m_rlast;
 
+    // NPU IRQ SIGNAL
+    wire npu_done_level;
     // =========================================================================
     // 3. 例化核心 CPU (PicoRV32 Master)
     // =========================================================================
     picorv32_axi #(
         .COMPRESSED_ISA(1),    
         .ENABLE_FAST_MUL(1),   
-        .ENABLE_DIV(1)         
+        .ENABLE_DIV(1),
+        .ENABLE_IRQ(1)
     ) cpu_core (
         .clk            (clk),
         .resetn         (resetn),
@@ -168,7 +171,7 @@ module tb_picorv32;
         .mem_axi_arvalid(cpu_arvalid), .mem_axi_arready(cpu_arready), .mem_axi_araddr (cpu_araddr), .mem_axi_arprot (cpu_arprot),
         .mem_axi_rvalid (cpu_rvalid),  .mem_axi_rready (cpu_rready),  .mem_axi_rdata  (cpu_rdata),  /* PicoRV32 不接 rresp */
 
-        .irq(32'b0), .pcpi_wr(1'b0), .pcpi_rd(32'b0), .pcpi_wait(1'b0), .pcpi_ready(1'b0)
+        .irq({27'b0, npu_done_level, 4'b0}), .pcpi_wr(1'b0), .pcpi_rd(32'b0), .pcpi_wait(1'b0), .pcpi_ready(1'b0)
     );
 
     // =========================================================================
@@ -317,7 +320,8 @@ module tb_picorv32;
     ) u_npu_wrapper (
         .clk            (clk), 
         .rst_n          (resetn),
-        
+        // NPU IRQ SIGNAL
+        .npu_done_level (npu_done_level),
         // ==========================================================
         // Slave 配置接口：接 CPU 互联矩阵的 S1
         // ==========================================================
