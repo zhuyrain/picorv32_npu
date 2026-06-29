@@ -101,13 +101,78 @@ module tb_picorv32;
     wire        sram_bvalid;  wire        sram_bready;  wire [ 1:0] sram_bresp;
     wire        sram_arvalid; wire        sram_arready; wire [31:0] sram_araddr;
     wire        sram_rvalid;  wire        sram_rready;  wire [31:0] sram_rdata;  wire [ 1:0] sram_rresp;
+    // 互联矩阵 M0 (SRAM) 接口线网声明
+    wire [ 3:0] sram_awid;    // 注意：互联矩阵出来的 ID 位宽是 5
+    wire [ 0:0] sram_awlock;
+    wire [ 3:0] sram_awcache;
+    wire [ 2:0] sram_awprot;
+    wire [ 7:0] sram_awlen;
+    wire [ 2:0] sram_awsize;
+    wire [ 1:0] sram_awburst;
+    wire        sram_wlast;
+    
+    wire [ 3:0] sram_bid;
 
+    wire [ 3:0] sram_arid;
+    wire [ 0:0] sram_arlock;
+    wire [ 3:0] sram_arcache;
+    wire [ 2:0] sram_arprot;
+    wire [ 7:0] sram_arlen;
+    wire [ 2:0] sram_arsize;
+    wire [ 1:0] sram_arburst;
+    wire        sram_rlast;
+    
+    wire [ 3:0] sram_rid;
+
+    // =========================================================================
     // --- S1: NPU Config Slave (Base: 0x4000_0000, Size: 4KB) ---
-    wire        npu_s_awvalid; wire        npu_s_awready; wire [31:0] npu_s_awaddr;
-    wire        npu_s_wvalid;  wire        npu_s_wready;  wire [31:0] npu_s_wdata; wire [ 3:0] npu_s_wstrb;
-    wire        npu_s_bvalid;  wire        npu_s_bready;  wire [ 1:0] npu_s_bresp;
-    wire        npu_s_arvalid; wire        npu_s_arready; wire [31:0] npu_s_araddr;
-    wire        npu_s_rvalid;  wire        npu_s_rready;  wire [31:0] npu_s_rdata; wire [ 1:0] npu_s_rresp;
+    // 满血版 AXI4-Full 线网声明 (对接 Interconnect M1 端口)
+    // =========================================================================
+    
+    // Write Address Channel
+    wire [ 3:0] npu_s_awid;      // 注意：互联矩阵扩展后的 5-bit ID
+    wire        npu_s_awvalid; 
+    wire        npu_s_awready; 
+    wire [31:0] npu_s_awaddr;
+    wire [ 7:0] npu_s_awlen;
+    wire [ 2:0] npu_s_awsize;
+    wire [ 1:0] npu_s_awburst;
+    wire [ 0:0] npu_s_awlock;
+    wire [ 3:0] npu_s_awcache;
+    wire [ 2:0] npu_s_awprot;
+
+    // Write Data Channel
+    wire        npu_s_wvalid; 
+    wire        npu_s_wready; 
+    wire [31:0] npu_s_wdata; 
+    wire [ 3:0] npu_s_wstrb;
+    wire        npu_s_wlast;
+
+    // Write Response Channel
+    wire [ 3:0] npu_s_bid;       // 注意：反射回总线的 5-bit ID
+    wire        npu_s_bvalid; 
+    wire        npu_s_bready; 
+    wire [ 1:0] npu_s_bresp;
+
+    // Read Address Channel
+    wire [ 3:0] npu_s_arid;      // 注意：互联矩阵扩展后的 5-bit ID
+    wire        npu_s_arvalid; 
+    wire        npu_s_arready; 
+    wire [31:0] npu_s_araddr;
+    wire [ 7:0] npu_s_arlen;
+    wire [ 2:0] npu_s_arsize;
+    wire [ 1:0] npu_s_arburst;
+    wire [ 0:0] npu_s_arlock;
+    wire [ 3:0] npu_s_arcache;
+    wire [ 2:0] npu_s_arprot;
+
+    // Read Data Channel
+    wire [ 3:0] npu_s_rid;       // 注意：反射回总线的 5-bit ID
+    wire        npu_s_rvalid; 
+    wire        npu_s_rready; 
+    wire [31:0] npu_s_rdata; 
+    wire [ 1:0] npu_s_rresp;
+    wire        npu_s_rlast;
     
     // =========================================================================
     // 2.1 NPU Master 直连 SRAM PortB 信号
@@ -122,6 +187,13 @@ module tb_picorv32;
     wire [ 2:0] npu_m_awsize;
     wire [ 1:0] npu_m_awburst;
 
+    // NPU Master 端新增aw边带信号线网声明
+    wire [ 3:0] npu_m_awid;
+    wire [ 0:0] npu_m_awlock;
+    wire [ 3:0] npu_m_awcache;
+    wire [ 2:0] npu_m_awprot;
+    wire [ 3:0] npu_m_awqos;
+
     // Write data channel
     wire        npu_m_wvalid;
     wire        npu_m_wready;
@@ -133,6 +205,8 @@ module tb_picorv32;
     wire        npu_m_bvalid;
     wire        npu_m_bready;
     wire [ 1:0] npu_m_bresp;
+    // NPU Master 端新增wb边带信号线网声明
+    wire [ 3:0] npu_m_bid;
 
     // Read address channel
     wire        npu_m_arvalid;
@@ -141,6 +215,12 @@ module tb_picorv32;
     wire [ 7:0] npu_m_arlen;
     wire [ 2:0] npu_m_arsize;
     wire [ 1:0] npu_m_arburst;
+    // NPU Master 端新增ar边带信号线网声明
+    wire [ 3:0] npu_m_arid;
+    wire [ 0:0] npu_m_arlock;
+    wire [ 3:0] npu_m_arcache;
+    wire [ 2:0] npu_m_arprot;
+    wire [ 3:0] npu_m_arqos;
 
     // Read data channel
     wire        npu_m_rvalid;
@@ -148,9 +228,67 @@ module tb_picorv32;
     wire [31:0] npu_m_rdata;
     wire [ 1:0] npu_m_rresp;
     wire        npu_m_rlast;
+    // NPU Master 端新增r边带信号线网声明
+    wire [ 3:0] npu_m_rid;
 
     // NPU IRQ SIGNAL
     wire npu_done_level;
+
+    // =========================================================================
+    // PicoRV32 AXI-Lite 适配 AXI-Full 的转接信号声明与绑定
+    // =========================================================================
+    
+    // --- Master 0 (CPU) 写地址通道 (AW) 补齐 ---
+    wire [3:0]  cpu_awid;
+    wire [7:0]  cpu_awlen;
+    wire [2:0]  cpu_awsize;
+    wire [1:0]  cpu_awburst;
+    wire [0:0]  cpu_awlock;
+    wire [3:0]  cpu_awcache;
+    wire [3:0]  cpu_awqos;
+
+    assign cpu_awid    = 4'b0000;   // ID 恒为 0
+    assign cpu_awlen   = 8'd0;      // 突发长度 0 代表传 1 拍 (非常关键)
+    assign cpu_awsize  = 3'b010;    // 每次传输 4 字节 (32-bit 总线)
+    assign cpu_awburst = 2'b01;     // INCR 模式 (即使是单拍，标准也推荐用 INCR)
+    assign cpu_awlock  = 0;     // 正常访问，无锁
+    assign cpu_awcache = 4'b0000;   // 非缓存
+    assign cpu_awqos   = 4'b0000;   // 低优先级
+    
+    // --- Master 0 (CPU) 写数据通道 (W) 补齐 ---
+    wire        cpu_wlast;
+    
+    // 神来之笔：因为 AWLEN 为 0（只传1拍），所以 CPU 每次发出数据的同时，必然也是最后一拍！
+    assign cpu_wlast   = 1'b1;      
+
+    // --- Master 0 (CPU) 写响应通道 (B) 接收 ---
+    // 这些是从 Interconnect 输出给 CPU 的，但 CPU 根本不看，所以只声明线网作为“垃圾桶”即可
+    wire [3:0]  cpu_bid;
+    wire [1:0]  cpu_bresp;
+
+    // --- Master 0 (CPU) 读地址通道 (AR) 补齐 ---
+    wire [3:0]  cpu_arid;
+    wire [7:0]  cpu_arlen;
+    wire [2:0]  cpu_arsize;
+    wire [1:0]  cpu_arburst;
+    wire [0:0]  cpu_arlock;
+    wire [3:0]  cpu_arcache;
+    wire [3:0]  cpu_arqos;
+
+    assign cpu_arid    = 4'b0000;
+    assign cpu_arlen   = 8'd0;      // 突发长度 0 代表传 1 拍
+    assign cpu_arsize  = 3'b010;    // 4 字节
+    assign cpu_arburst = 2'b01;     // INCR 模式
+    assign cpu_arlock  = 0;
+    assign cpu_arcache = 4'b0000;
+    assign cpu_arqos = 4'b0000;
+
+    // --- Master 0 (CPU) 读数据通道 (R) 接收 ---
+    // 互联总线吐出，CPU 直接忽略的信号
+    wire [3:0]  cpu_rid;
+    wire [1:0]  cpu_rresp;
+    wire        cpu_rlast;
+    
     // =========================================================================
     // 3. 例化核心 CPU (PicoRV32 Master)
     // =========================================================================
@@ -253,102 +391,197 @@ module tb_picorv32;
     // end
 
     // =========================================================================
-    // 5. AXI-Lite 互联矩阵 (降维为 1 Master x 2 Slave)
+    // 5. AXI4-Full 互联矩阵 (2 Master x 2 Slave)
+    // 
+    // [Master 端 S_COUNT=2]
+    // S1: NPU_Master (高优先级/并行端)
+    // S0: CPU_Master 
+    //
+    // [Slave  端 M_COUNT=2]
+    // M1: NPU_CFG (Base: 0x4000_0000, Size: 4KB  -> 12位)
+    // M0: SRAM    (Base: 0x0000_0000, Size: 2MB  -> 21位)
     // =========================================================================
-    axil_interconnect #(
-        .S_COUNT(1), // 【修改】：只有 CPU 1 个 Master 挂在互联矩阵上！
+
+    axi_interconnect #(
+        .S_COUNT(2), 
         .M_COUNT(2), 
         .DATA_WIDTH(32), 
         .ADDR_WIDTH(32),
-        // M1(NPU_CFG): 0x4000_0000, M0(SRAM): 0x0000_0000
+        .ID_WIDTH(4),   // AXI4 标准 ID 位宽，用于区分交织与乱序
         .M_BASE_ADDR({32'h4000_0000, 32'h0000_0000}), 
-        // M1(NPU_CFG): 4KB(12位), M0(SRAM): 2MB(21位)
         .M_ADDR_WIDTH({32'd12, 32'd21})
     ) u_interconnect (
         .clk(clk),
         .rst(~resetn), // 取反复位
 
-        // 只有 CPU 连入 S_AXIL 端口
-        .s_axil_awaddr (cpu_awaddr),
-        .s_axil_awprot (cpu_awprot),
-        .s_axil_awvalid(cpu_awvalid),
-        .s_axil_awready(cpu_awready),
-        .s_axil_wdata  (cpu_wdata),
-        .s_axil_wstrb  (cpu_wstrb),
-        .s_axil_wvalid (cpu_wvalid),
-        .s_axil_wready (cpu_wready),
-        .s_axil_bresp  (cpu_bresp),
-        .s_axil_bvalid (cpu_bvalid),
-        .s_axil_bready (cpu_bready),
-        .s_axil_araddr (cpu_araddr),
-        .s_axil_arprot (cpu_arprot),
-        .s_axil_arvalid(cpu_arvalid),
-        .s_axil_arready(cpu_arready),
-        .s_axil_rdata  (cpu_rdata),
-        .s_axil_rresp  (cpu_rresp),
-        .s_axil_rvalid (cpu_rvalid),
-        .s_axil_rready (cpu_rready),
+        // ======================================================
+        // S_AXI 接口 (Master 连入) -> 拼接顺序: {S1(NPU), S0(CPU)}
+        // ======================================================
+        
+        // Write Address Channel
+        .s_axi_awid    ({npu_m_awid,    cpu_awid}),
+        .s_axi_awaddr  ({npu_m_awaddr,  cpu_awaddr}),
+        .s_axi_awlen   ({npu_m_awlen,   cpu_awlen}),
+        .s_axi_awsize  ({npu_m_awsize,  cpu_awsize}),
+        .s_axi_awburst ({npu_m_awburst, cpu_awburst}),
+        .s_axi_awlock  ({npu_m_awlock,  cpu_awlock}),
+        .s_axi_awcache ({npu_m_awcache, cpu_awcache}),
+        .s_axi_awprot  ({npu_m_awprot,  cpu_awprot}),
+        .s_axi_awqos   ({npu_m_awqos, cpu_awqos}),
+        .s_axi_awvalid ({npu_m_awvalid, cpu_awvalid}),
+        .s_axi_awready ({npu_m_awready, cpu_awready}),
 
-        // 连向 Slave (拼接顺序 {NPU_S, SRAM_S})
-        .m_axil_awaddr ({npu_s_awaddr,  sram_awaddr}),
-        .m_axil_awprot (), 
-        .m_axil_awvalid({npu_s_awvalid, sram_awvalid}),
-        .m_axil_awready({npu_s_awready, sram_awready}),
-        .m_axil_wdata  ({npu_s_wdata,   sram_wdata}),
-        .m_axil_wstrb  ({npu_s_wstrb,   sram_wstrb}),
-        .m_axil_wvalid ({npu_s_wvalid,  sram_wvalid}),
-        .m_axil_wready ({npu_s_wready,  sram_wready}),
-        .m_axil_bresp  ({npu_s_bresp,   sram_bresp}),
-        .m_axil_bvalid ({npu_s_bvalid,  sram_bvalid}),
-        .m_axil_bready ({npu_s_bready,  sram_bready}),
-        .m_axil_araddr ({npu_s_araddr,  sram_araddr}),
-        .m_axil_arprot (),
-        .m_axil_arvalid({npu_s_arvalid, sram_arvalid}),
-        .m_axil_arready({npu_s_arready, sram_arready}),
-        .m_axil_rdata  ({npu_s_rdata,   sram_rdata}),
-        .m_axil_rresp  ({npu_s_rresp,   sram_rresp}),
-        .m_axil_rvalid ({npu_s_rvalid,  sram_rvalid}),
-        .m_axil_rready ({npu_s_rready,  sram_rready})
+        // Write Data Channel
+        .s_axi_wdata   ({npu_m_wdata,   cpu_wdata}),
+        .s_axi_wstrb   ({npu_m_wstrb,   cpu_wstrb}),
+        .s_axi_wlast   ({npu_m_wlast,   cpu_wlast}),
+        .s_axi_wvalid  ({npu_m_wvalid,  cpu_wvalid}),
+        .s_axi_wready  ({npu_m_wready,  cpu_wready}),
+
+        // Write Response Channel
+        .s_axi_bid     ({npu_m_bid,     cpu_bid}),
+        .s_axi_bresp   ({npu_m_bresp,   cpu_bresp}),
+        .s_axi_bvalid  ({npu_m_bvalid,  cpu_bvalid}),
+        .s_axi_bready  ({npu_m_bready,  cpu_bready}),
+
+        // Read Address Channel
+        .s_axi_arid    ({npu_m_arid,    cpu_arid}),
+        .s_axi_araddr  ({npu_m_araddr,  cpu_araddr}),
+        .s_axi_arlen   ({npu_m_arlen,   cpu_arlen}),
+        .s_axi_arsize  ({npu_m_arsize,  cpu_arsize}),
+        .s_axi_arburst ({npu_m_arburst, cpu_arburst}),
+        .s_axi_arlock  ({npu_m_arlock,  cpu_arlock}),
+        .s_axi_arcache ({npu_m_arcache, cpu_arcache}),
+        .s_axi_arprot  ({npu_m_arprot,  cpu_arprot}),
+        .s_axi_arqos   ({npu_m_arqos, cpu_arqos}),
+        .s_axi_arvalid ({npu_m_arvalid, cpu_arvalid}),
+        .s_axi_arready ({npu_m_arready, cpu_arready}),
+
+        // Read Data Channel
+        .s_axi_rid     ({npu_m_rid,     cpu_rid}),
+        .s_axi_rdata   ({npu_m_rdata,   cpu_rdata}),
+        .s_axi_rresp   ({npu_m_rresp,   cpu_rresp}),
+        .s_axi_rlast   ({npu_m_rlast,   cpu_rlast}),
+        .s_axi_rvalid  ({npu_m_rvalid,  cpu_rvalid}),
+        .s_axi_rready  ({npu_m_rready,  cpu_rready}),
+
+        // ======================================================
+        // M_AXI 接口 (连向 Slave) -> 拼接顺序: {M1(NPU_CFG), M0(SRAM)}
+        // ======================================================
+        
+        // Write Address Channel
+        .m_axi_awid    ({npu_s_awid,    sram_awid}),
+        .m_axi_awaddr  ({npu_s_awaddr,  sram_awaddr}),
+        .m_axi_awlen   ({npu_s_awlen,   sram_awlen}),
+        .m_axi_awsize  ({npu_s_awsize,  sram_awsize}),
+        .m_axi_awburst ({npu_s_awburst, sram_awburst}),
+        .m_axi_awlock  ({npu_s_awlock,  sram_awlock}),
+        .m_axi_awcache ({npu_s_awcache, sram_awcache}),
+        .m_axi_awprot  ({npu_s_awprot,  sram_awprot}),
+        .m_axi_awqos   (), // 输出悬空
+        .m_axi_awregion(), // 输出悬空
+        .m_axi_awvalid ({npu_s_awvalid, sram_awvalid}),
+        .m_axi_awready ({npu_s_awready, sram_awready}),
+
+        // Write Data Channel
+        .m_axi_wdata   ({npu_s_wdata,   sram_wdata}),
+        .m_axi_wstrb   ({npu_s_wstrb,   sram_wstrb}),
+        .m_axi_wlast   ({npu_s_wlast,   sram_wlast}),
+        .m_axi_wvalid  ({npu_s_wvalid,  sram_wvalid}),
+        .m_axi_wready  ({npu_s_wready,  sram_wready}),
+
+        // Write Response Channel
+        .m_axi_bid     ({npu_s_bid,     sram_bid}),
+        .m_axi_bresp   ({npu_s_bresp,   sram_bresp}),
+        .m_axi_bvalid  ({npu_s_bvalid,  sram_bvalid}),
+        .m_axi_bready  ({npu_s_bready,  sram_bready}),
+
+        // Read Address Channel
+        .m_axi_arid    ({npu_s_arid,    sram_arid}),
+        .m_axi_araddr  ({npu_s_araddr,  sram_araddr}),
+        .m_axi_arlen   ({npu_s_arlen,   sram_arlen}),
+        .m_axi_arsize  ({npu_s_arsize,  sram_arsize}),
+        .m_axi_arburst ({npu_s_arburst, sram_arburst}),
+        .m_axi_arlock  ({npu_s_arlock,  sram_arlock}),
+        .m_axi_arcache ({npu_s_arcache, sram_arcache}),
+        .m_axi_arprot  ({npu_s_arprot,  sram_arprot}),
+        .m_axi_arqos   (), // 输出悬空
+        .m_axi_arregion(), // 输出悬空
+        .m_axi_arvalid ({npu_s_arvalid, sram_arvalid}),
+        .m_axi_arready ({npu_s_arready, sram_arready}),
+
+        // Read Data Channel
+        .m_axi_rid     ({npu_s_rid,     sram_rid}),
+        .m_axi_rdata   ({npu_s_rdata,   sram_rdata}),
+        .m_axi_rresp   ({npu_s_rresp,   sram_rresp}),
+        .m_axi_rlast   ({npu_s_rlast,   sram_rlast}),
+        .m_axi_rvalid  ({npu_s_rvalid,  sram_rvalid}),
+        .m_axi_rready  ({npu_s_rready,  sram_rready})
     );
 
-    // =========================================================================
+// =========================================================================
     // 6. 例化 NPU 异构加速子系统
     // =========================================================================
     npu_axi_wrapper_burst #(
         .SYS_ROWS(4), 
-        .SYS_COLS(4)
+        .SYS_COLS(4),
+        .S_AXI_ID_WIDTH(4)       // 新增：匹配 AXI 互联矩阵扩展后的 5-bit ID
     ) u_npu_wrapper (
         .clk            (clk), 
-        .rst_n          (resetn),
+        .rst_n          (resetn), 
         // NPU IRQ SIGNAL
         .npu_done_level (npu_done_level),
         // ==========================================================
-        // Slave 配置接口：接 CPU 互联矩阵的 S1
+        // Slave 配置接口：接 CPU 互联矩阵的 M1 端口 (满血 AXI4)
         // ==========================================================
+        
+        // --- Write Address Channel ---
+        .s_axi_awid     (npu_s_awid),    // 新增
         .s_axi_awvalid  (npu_s_awvalid),
         .s_axi_awready  (npu_s_awready),
         .s_axi_awaddr   (npu_s_awaddr),
+        .s_axi_awlen    (npu_s_awlen),   // 新增
+        .s_axi_awsize   (npu_s_awsize),  // 新增
+        .s_axi_awburst  (npu_s_awburst), // 新增
+        .s_axi_awlock   (npu_s_awlock),  // 新增
+        .s_axi_awcache  (npu_s_awcache), // 新增
+        .s_axi_awprot   (npu_s_awprot),  // 新增
 
+        // --- Write Data Channel ---
         .s_axi_wvalid   (npu_s_wvalid),
         .s_axi_wready   (npu_s_wready),
         .s_axi_wdata    (npu_s_wdata),
         .s_axi_wstrb    (npu_s_wstrb),
+        .s_axi_wlast    (npu_s_wlast),   // 新增
 
+        // --- Write Response Channel ---
+        .s_axi_bid      (npu_s_bid),     // 新增
         .s_axi_bvalid   (npu_s_bvalid),
         .s_axi_bready   (npu_s_bready),
         .s_axi_bresp    (npu_s_bresp),
 
+        // --- Read Address Channel ---
+        .s_axi_arid     (npu_s_arid),    // 新增
         .s_axi_arvalid  (npu_s_arvalid),
         .s_axi_arready  (npu_s_arready),
         .s_axi_araddr   (npu_s_araddr),
+        .s_axi_arlen    (npu_s_arlen),   // 新增
+        .s_axi_arsize   (npu_s_arsize),  // 新增
+        .s_axi_arburst  (npu_s_arburst), // 新增
+        .s_axi_arlock   (npu_s_arlock),  // 新增
+        .s_axi_arcache  (npu_s_arcache), // 新增
+        .s_axi_arprot   (npu_s_arprot),  // 新增
 
+        // --- Read Data Channel ---
+        .s_axi_rid      (npu_s_rid),     // 新增
         .s_axi_rvalid   (npu_s_rvalid),
         .s_axi_rready   (npu_s_rready),
         .s_axi_rdata    (npu_s_rdata),
         .s_axi_rresp    (npu_s_rresp),
+        .s_axi_rlast    (npu_s_rlast),   // 新增
         
         // ==========================================================
-        // Master 访存接口：简化 AXI4 Burst，直连 SRAM Port B
+        // Master 访存接口：满血版 AXI4 Burst，直连 axi_interconnect
         // ==========================================================
 
         // Read address channel
@@ -358,6 +591,12 @@ module tb_picorv32;
         .m_axi_arlen    (npu_m_arlen),
         .m_axi_arsize   (npu_m_arsize),
         .m_axi_arburst  (npu_m_arburst),
+        // --- 新增 AR 边带信号 ---
+        .m_axi_arid     (npu_m_arid),
+        .m_axi_arlock   (npu_m_arlock),
+        .m_axi_arcache  (npu_m_arcache),
+        .m_axi_arprot   (npu_m_arprot),
+        .m_axi_arqos    (npu_m_arqos),
 
         // Read data channel
         .m_axi_rvalid   (npu_m_rvalid),
@@ -365,6 +604,8 @@ module tb_picorv32;
         .m_axi_rdata    (npu_m_rdata),
         .m_axi_rresp    (npu_m_rresp),
         .m_axi_rlast    (npu_m_rlast),
+        // --- 新增 R 边带信号 ---
+        .m_axi_rid      (npu_m_rid),
 
         // Write address channel
         .m_axi_awvalid  (npu_m_awvalid),
@@ -373,6 +614,12 @@ module tb_picorv32;
         .m_axi_awlen    (npu_m_awlen),
         .m_axi_awsize   (npu_m_awsize),
         .m_axi_awburst  (npu_m_awburst),
+        // --- 新增 AW 边带信号 ---
+        .m_axi_awid     (npu_m_awid),
+        .m_axi_awlock   (npu_m_awlock),
+        .m_axi_awcache  (npu_m_awcache),
+        .m_axi_awprot   (npu_m_awprot),
+        .m_axi_awqos    (npu_m_awqos),
 
         // Write data channel
         .m_axi_wvalid   (npu_m_wvalid),
@@ -384,83 +631,70 @@ module tb_picorv32;
         // Write response channel
         .m_axi_bvalid   (npu_m_bvalid),
         .m_axi_bready   (npu_m_bready),
-        .m_axi_bresp    (npu_m_bresp)
+        .m_axi_bresp    (npu_m_bresp),
+        // --- 新增 B 边带信号 ---
+        .m_axi_bid      (npu_m_bid)
     );
 
     // =========================================================================
     // 7. 例化 我们自己手搓的 混合端口 SRAM (2MB)
-    //    Port A: AXI4-Lite，接 CPU 互联矩阵
-    //    Port B: 简化 AXI4 Burst，NPU DMA Master 直连
+    //    Port A: AXI4-Lite
+    //    Port B: AXI4 Burst，接互联矩阵
     // =========================================================================
     axi_dp_sram_hybrid #(
-        .MEM_SIZE(2097152) // 2MB
+        .MEM_SIZE(2097152), // 2MB
+        .S_AXI_ID_WIDTH(4) // 匹配互联矩阵扩展后的 5-bit ID
     ) main_memory (
         .clk            (clk),
         .resetn         (resetn),
 
         // ==========================================================
-        // Port A: 接入 CPU 的互联矩阵 (AXI4-Lite)
+        // Port B: NPU DMA Master 直连，AXI4 Burst 协议
         // ==========================================================
-        .axi_a_awvalid  (sram_awvalid),
-        .axi_a_awready  (sram_awready),
-        .axi_a_awaddr   (sram_awaddr),
+        // --- Write Address Channel ---
+        .axi_b_awid     (sram_awid),     // 新增：写 ID 接收
+        .axi_b_awvalid  (sram_awvalid),
+        .axi_b_awready  (sram_awready),
+        .axi_b_awaddr   (sram_awaddr),
+        .axi_b_awlen    (sram_awlen),
+        .axi_b_awsize   (sram_awsize),
+        .axi_b_awburst  (sram_awburst),
+        .axi_b_awlock   (sram_awlock),   // 新增：边带接收
+        .axi_b_awcache  (sram_awcache),  // 新增：边带接收
+        .axi_b_awprot   (sram_awprot),   // 新增：边带接收
 
-        .axi_a_wvalid   (sram_wvalid),
-        .axi_a_wready   (sram_wready),
-        .axi_a_wdata    (sram_wdata),
-        .axi_a_wstrb    (sram_wstrb),
+        // --- Write Data Channel ---
+        .axi_b_wvalid   (sram_wvalid),
+        .axi_b_wready   (sram_wready),
+        .axi_b_wdata    (sram_wdata),
+        .axi_b_wstrb    (sram_wstrb),
+        .axi_b_wlast    (sram_wlast),
 
-        .axi_a_bvalid   (sram_bvalid),
-        .axi_a_bready   (sram_bready),
-        .axi_a_bresp    (sram_bresp),
+        // --- Write Response Channel ---
+        .axi_b_bid      (sram_bid),      // 新增：写响应 ID 反射
+        .axi_b_bvalid   (sram_bvalid),
+        .axi_b_bready   (sram_bready),
+        .axi_b_bresp    (sram_bresp),
 
-        .axi_a_arvalid  (sram_arvalid),
-        .axi_a_arready  (sram_arready),
-        .axi_a_araddr   (sram_araddr),
+        // --- Read Address Channel ---
+        .axi_b_arid     (sram_arid),     // 新增：读 ID 接收
+        .axi_b_arvalid  (sram_arvalid),
+        .axi_b_arready  (sram_arready),
+        .axi_b_araddr   (sram_araddr),
+        .axi_b_arlen    (sram_arlen),
+        .axi_b_arsize   (sram_arsize),
+        .axi_b_arburst  (sram_arburst),
+        .axi_b_arlock   (sram_arlock),   // 新增：边带接收
+        .axi_b_arcache  (sram_arcache),  // 新增：边带接收
+        .axi_b_arprot   (sram_arprot),   // 新增：边带接收
 
-        .axi_a_rvalid   (sram_rvalid),
-        .axi_a_rready   (sram_rready),
-        .axi_a_rdata    (sram_rdata),
-        .axi_a_rresp    (sram_rresp),
-
-        // ==========================================================
-        // Port B: NPU DMA Master 直连，简化 AXI4 Burst 协议
-        // ==========================================================
-
-        // Write address channel
-        .axi_b_awvalid  (npu_m_awvalid),
-        .axi_b_awready  (npu_m_awready),
-        .axi_b_awaddr   (npu_m_awaddr),
-        .axi_b_awlen    (npu_m_awlen),
-        .axi_b_awsize   (npu_m_awsize),
-        .axi_b_awburst  (npu_m_awburst),
-
-        // Write data channel
-        .axi_b_wvalid   (npu_m_wvalid),
-        .axi_b_wready   (npu_m_wready),
-        .axi_b_wdata    (npu_m_wdata),
-        .axi_b_wstrb    (npu_m_wstrb),
-        .axi_b_wlast    (npu_m_wlast),
-
-        // Write response channel
-        .axi_b_bvalid   (npu_m_bvalid),
-        .axi_b_bready   (npu_m_bready),
-        .axi_b_bresp    (npu_m_bresp),
-
-        // Read address channel
-        .axi_b_arvalid  (npu_m_arvalid),
-        .axi_b_arready  (npu_m_arready),
-        .axi_b_araddr   (npu_m_araddr),
-        .axi_b_arlen    (npu_m_arlen),
-        .axi_b_arsize   (npu_m_arsize),
-        .axi_b_arburst  (npu_m_arburst),
-
-        // Read data channel
-        .axi_b_rvalid   (npu_m_rvalid),
-        .axi_b_rready   (npu_m_rready),
-        .axi_b_rdata    (npu_m_rdata),
-        .axi_b_rresp    (npu_m_rresp),
-        .axi_b_rlast    (npu_m_rlast)
+        // --- Read Data Channel ---
+        .axi_b_rid      (sram_rid),      // 新增：读数据 ID 反射
+        .axi_b_rvalid   (sram_rvalid),
+        .axi_b_rready   (sram_rready),
+        .axi_b_rdata    (sram_rdata),
+        .axi_b_rresp    (sram_rresp),
+        .axi_b_rlast    (sram_rlast)
     );
 
 endmodule

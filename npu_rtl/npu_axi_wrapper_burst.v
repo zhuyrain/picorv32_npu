@@ -5,42 +5,66 @@ module npu_axi_wrapper_burst #(
     parameter SYS_ROWS = 4, 
     parameter SYS_COLS = 4,
     // 自动计算所需的计数器位宽
-    localparam PC_W = $clog2(SYS_COLS + 1) // 如果 COLS=4，位宽是3；如果 COLS=32，位宽是6
+    localparam PC_W = $clog2(SYS_COLS + 1), // 如果 COLS=4，位宽是3；如果 COLS=32，位宽是6
+    parameter S_AXI_ID_WIDTH = 4  // 留出 ID 位宽参数，后续单独处理路由逻辑
 )(
     input  wire         clk,
     input  wire         rst_n,
     // NPU IRQ SIGNAL
     output wire npu_done_level,
-    // ==========================================
-    // 1. AXI4-Lite Slave 接口 (连接到 CPU/总线矩阵)
-    // CPU 通过该接口配置 NPU 寄存器
-    // ==========================================
-    // 写地址通道
-    input  wire         s_axi_awvalid,
-    output wire         s_axi_awready,
-    input  wire [31:0]  s_axi_awaddr,
-    // 写数据通道
-    input  wire         s_axi_wvalid,
-    output wire         s_axi_wready,
-    input  wire [31:0]  s_axi_wdata,
-    input  wire [ 3:0]  s_axi_wstrb,
-    // 写响应通道
-    output wire         s_axi_bvalid,
-    input  wire         s_axi_bready,
-    output wire [ 1:0]  s_axi_bresp,
-    // 读地址通道
-    input  wire         s_axi_arvalid,
-    output wire         s_axi_arready,
-    input  wire [31:0]  s_axi_araddr,
-    // 读数据通道
-    output wire         s_axi_rvalid,
-    input  wire         s_axi_rready,
-    output wire [31:0]  s_axi_rdata,
-    output wire [ 1:0]  s_axi_rresp,
+    // =========================================================================
+    // 1. AXI4 Full Slave 接口 (连接到 AXI Interconnect 的 Master 端口)
+    //    CPU 通过该接口配置 NPU 内部寄存器
+    // =========================================================================
+    
+    // --- 写地址通道 (Write Address Channel) ---
+    input  wire [S_AXI_ID_WIDTH-1:0] s_axi_awid,     // 【暂搁置】后续处理
+    input  wire [31:0]               s_axi_awaddr,
+    input  wire [ 7:0]               s_axi_awlen,    // 新增：Full 突发长度
+    input  wire [ 2:0]               s_axi_awsize,   // 新增：Full 突发大小
+    input  wire [ 1:0]               s_axi_awburst,  // 新增：Full 突发类型
+    input  wire [ 0:0]               s_axi_awlock,   // 新增：Full 原子锁
+    input  wire [ 3:0]               s_axi_awcache,  // 新增：Full 缓存属性
+    input  wire [ 2:0]               s_axi_awprot,   // 新增：Full 保护属性
+    input  wire                      s_axi_awvalid,
+    output wire                      s_axi_awready,
+
+    // --- 写数据通道 (Write Data Channel) ---
+    input  wire [31:0]               s_axi_wdata,
+    input  wire [ 3:0]               s_axi_wstrb,
+    input  wire                      s_axi_wlast,    // 新增：Full 写最后一拍标志
+    input  wire                      s_axi_wvalid,
+    output wire                      s_axi_wready,
+
+    // --- 写响应通道 (Write Response Channel) ---
+    output wire [S_AXI_ID_WIDTH-1:0] s_axi_bid,      // 【暂搁置】后续处理
+    output wire [ 1:0]               s_axi_bresp,
+    output wire                      s_axi_bvalid,
+    input  wire                      s_axi_bready,
+
+    // --- 读地址通道 (Read Address Channel) ---
+    input  wire [S_AXI_ID_WIDTH-1:0] s_axi_arid,     // 【暂搁置】后续处理
+    input  wire [31:0]               s_axi_araddr,
+    input  wire [ 7:0]               s_axi_arlen,    // 新增：Full 突发长度
+    input  wire [ 2:0]               s_axi_arsize,   // 新增：Full 突发大小
+    input  wire [ 1:0]               s_axi_arburst,  // 新增：Full 突发类型
+    input  wire [ 0:0]               s_axi_arlock,   // 新增：Full 原子锁
+    input  wire [ 3:0]               s_axi_arcache,  // 新增：Full 缓存属性
+    input  wire [ 2:0]               s_axi_arprot,   // 新增：Full 保护属性
+    input  wire                      s_axi_arvalid,
+    output wire                      s_axi_arready,
+
+    // --- 读数据通道 (Read Data Channel) ---
+    output wire [S_AXI_ID_WIDTH-1:0] s_axi_rid,      // 【暂搁置】后续处理
+    output wire [31:0]               s_axi_rdata,
+    output wire [ 1:0]               s_axi_rresp,
+    output wire                      s_axi_rlast,    // 新增：Full 读最后一拍标志
+    output wire                      s_axi_rvalid,
+    input  wire                      s_axi_rready,
 
     // ==========================================
     // 2. AXI4 Burst Master 接口 (NPU 访存端口)
-    //    用于直连 axi_dp_sram_hybrid 的 Port B
+    //    用于直连 axi_interconnect
     // ==========================================
     // Read address channel
     output wire         m_axi_arvalid,
@@ -49,6 +73,12 @@ module npu_axi_wrapper_burst #(
     output wire [ 7:0]  m_axi_arlen,
     output wire [ 2:0]  m_axi_arsize,
     output wire [ 1:0]  m_axi_arburst,
+    // --- 新增 AR 边带信号 ---
+    output wire [ 3:0]  m_axi_arid,
+    output wire [ 0:0]  m_axi_arlock,
+    output wire [ 3:0]  m_axi_arcache,
+    output wire [ 2:0]  m_axi_arprot,
+    output wire [ 3:0]  m_axi_arqos,
 
     // Read data channel
     input  wire         m_axi_rvalid,
@@ -56,6 +86,8 @@ module npu_axi_wrapper_burst #(
     input  wire [31:0]  m_axi_rdata,
     input  wire [ 1:0]  m_axi_rresp,
     input  wire         m_axi_rlast,
+    // --- 新增 R 边带信号 (作为垃圾桶接收) ---
+    input  wire [ 3:0]  m_axi_rid,
 
     // Write address channel
     output reg          m_axi_awvalid,
@@ -64,6 +96,12 @@ module npu_axi_wrapper_burst #(
     output reg  [ 7:0]  m_axi_awlen,
     output reg  [ 2:0]  m_axi_awsize,
     output reg  [ 1:0]  m_axi_awburst,
+    // --- 新增 AW 边带信号 ---
+    output wire [ 3:0]  m_axi_awid,
+    output wire [ 0:0]  m_axi_awlock,
+    output wire [ 3:0]  m_axi_awcache,
+    output wire [ 2:0]  m_axi_awprot,
+    output wire [ 3:0]  m_axi_awqos,
 
     // Write data channel
     output reg          m_axi_wvalid,
@@ -75,7 +113,9 @@ module npu_axi_wrapper_burst #(
     // Write response channel
     input  wire         m_axi_bvalid,
     output reg          m_axi_bready,
-    input  wire [ 1:0]  m_axi_bresp
+    input  wire [ 1:0]  m_axi_bresp,
+    // --- 新增 B 边带信号 (作为垃圾桶接收) ---
+    input  wire [ 3:0]  m_axi_bid
 );
 
     // =========================================================
@@ -97,6 +137,9 @@ module npu_axi_wrapper_burst #(
     reg         npu_busy;                             
     reg         npu_done_pulse;
     assign      npu_done_level    = reg_ctrl_status[2];                            
+
+    // axi-full信号处理
+    assign s_axi_rlast = s_axi_rvalid;
 
     // 提取配置字段供内部 Datapath 和 FSM 使用
     wire [15:0] cfg_img_h         = reg_cfg_img_dim[31:16];
@@ -121,6 +164,7 @@ module npu_axi_wrapper_burst #(
     reg s_aw_ready_reg, s_w_ready_reg, s_b_valid_reg;
     reg [31:0] s_aw_addr_reg;
     reg [31:0] s_w_data_reg;
+    reg [S_AXI_ID_WIDTH-1:0] s_w_id_reg; // 新增：用于暂存 AWID
     
     reg s_aw_latched; 
     reg s_w_latched;
@@ -128,6 +172,7 @@ module npu_axi_wrapper_burst #(
     assign s_axi_awready = s_aw_ready_reg;
     assign s_axi_wready  = s_w_ready_reg;
     assign s_axi_bvalid  = s_b_valid_reg;
+    assign s_axi_bid     = s_w_id_reg;   // 新增：连续赋值给输出端口
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -147,6 +192,7 @@ module npu_axi_wrapper_burst #(
             s_b_valid_reg    <= 1'b0;
             s_aw_latched     <= 1'b0;
             s_w_latched      <= 1'b0;
+            s_w_id_reg     <= 0;         // 新增：复位清零
         end else begin  
             // ----------------------------------------------------
             // NPU 内部状态自我维护 (优先级较低，可被 AXI 写覆盖)
@@ -168,6 +214,7 @@ module npu_axi_wrapper_burst #(
                 s_aw_addr_reg  <= s_axi_awaddr;
                 s_aw_latched   <= 1'b1;
                 s_aw_ready_reg <= 1'b0; // 阻止新请求
+                s_w_id_reg     <= s_axi_awid; // 🌟黄金操作：寄存当前事务的 ID
             end
 
             // 2. 握手 W 通道：锁存数据
@@ -216,26 +263,32 @@ module npu_axi_wrapper_burst #(
     end
 
     // =========================================================
-    // AXI4-Lite Slave 读事务状态机 (严格合规版)
+    // AXI4 Slave 读事务状态机 (严格合规版 + ID反射)
     // =========================================================
     assign s_axi_rresp   = 2'b00; // OKAY
 
     reg s_ar_ready_reg, s_r_valid_reg;
     reg [31:0] s_r_data_reg;
+    reg [S_AXI_ID_WIDTH-1:0] s_r_id_reg; // 新增：用于暂存 ARID
 
     assign s_axi_arready = s_ar_ready_reg;
     assign s_axi_rvalid  = s_r_valid_reg;
     assign s_axi_rdata   = s_r_data_reg;
+    assign s_axi_rid     = s_r_id_reg;   // 新增：连续赋值给输出端口
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             s_ar_ready_reg <= 1'b1;
             s_r_valid_reg  <= 1'b0;
             s_r_data_reg   <= 32'd0;
+            s_r_id_reg     <= 0;         // 新增：复位清零
         end else begin
             
-            // 1. 握手 AR 通道：接收读地址并提取数据
+            // 1. 握手 AR 通道：接收读地址、提取数据并寄存 ID
             if (s_axi_arvalid && s_ar_ready_reg) begin
+                
+                s_r_id_reg <= s_axi_arid; // 🌟黄金操作：寄存当前事务的 ID
+                
                 case (s_axi_araddr[7:2])
                     6'd0: s_r_data_reg <= current_status; 
                     6'd1: s_r_data_reg <= reg_act_base;
@@ -246,7 +299,7 @@ module npu_axi_wrapper_burst #(
                     6'd6: s_r_data_reg <= reg_cfg_channels;
                     6'd7: s_r_data_reg <= reg_cfg_quant;
                     6'd8: s_r_data_reg <= reg_cfg_datapath;
-                    6'd8: s_r_data_reg <= reg_cfg_datapath2;
+                    6'd9: s_r_data_reg <= reg_cfg_datapath2; // 修复
                     default: s_r_data_reg <= 32'hDEADBEEF; 
                 endcase
                 
@@ -426,8 +479,35 @@ module npu_axi_wrapper_burst #(
         .almost_full(fifo_almost_full)
     );
 
+    // =========================================================================
+    // [模块 3]: AXI-Burst Master主状态机边带信号静态绑死逻辑 (Static Tie-offs)
+    // =========================================================================
+    
+    // 1. ID 绑死：NPU 是严格保序的 DMA 数据流，不需要乱序重排，ID 恒为 0
+    assign m_axi_awid    = 4'b0000;
+    assign m_axi_arid    = 4'b0000;
+
+    // 2. 锁绑死：普通内存访问，不搞独占或原子操作 (原子操作是 CPU 管的事)
+    assign m_axi_awlock  = 0;
+    assign m_axi_arlock  = 0;
+
+    // 3. Cache 绑死：Non-cacheable (裸机系统或片上 SRAM 直接访问)
+    assign m_axi_awcache = 4'b0000;
+    assign m_axi_arcache = 4'b0000;
+
+    // 4. 保护属性：Unprivileged, Secure, Data Access (非特权安全数据访问)
+    assign m_axi_awprot  = 3'b000;
+    assign m_axi_arprot  = 3'b000;
+
+    // 5. QoS 服务质量：NPU 为算力核心，赋予互联矩阵中的最高优先级！(4'b1111)
+    assign m_axi_awqos   = 4'b1111;
+    assign m_axi_arqos   = 4'b1111;
+
+    // 注：对于输入的 m_axi_rid 和 m_axi_bid 信号，NPU 逻辑内部直接忽略即可。
+    // 在 Verilog 中，input 信号悬空不使用会被综合工具自动优化（裁减掉），非常安全。
+
     // =========================================================
-    // [模块 3]: AXI-Lite Master 主状态机 (DMA 控制流)
+    // [模块 3]: AXI-Burst Master 主状态机 (DMA 控制流)
     // =========================================================
     localparam S_IDLE            = 4'd0;
     localparam S_LOAD_BIAS       = 4'd1;
