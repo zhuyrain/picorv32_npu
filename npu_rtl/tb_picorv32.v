@@ -95,34 +95,22 @@ module tb_picorv32;
     wire        cpu_arvalid; wire        cpu_arready; wire [31:0] cpu_araddr; wire [ 2:0] cpu_arprot;
     wire        cpu_rvalid;  wire        cpu_rready;  wire [31:0] cpu_rdata;  wire [ 1:0] cpu_rresp;
 
-    // --- S0: AXI SRAM Port A (Base: 0x0000_0000, Size: 2MB) ---
-    wire        sram_awvalid; wire        sram_awready; wire [31:0] sram_awaddr;
-    wire        sram_wvalid;  wire        sram_wready;  wire [31:0] sram_wdata;  wire [ 3:0] sram_wstrb;
-    wire        sram_bvalid;  wire        sram_bready;  wire [ 1:0] sram_bresp;
-    wire        sram_arvalid; wire        sram_arready; wire [31:0] sram_araddr;
-    wire        sram_rvalid;  wire        sram_rready;  wire [31:0] sram_rdata;  wire [ 1:0] sram_rresp;
-    // 互联矩阵 M0 (SRAM) 接口线网声明
-    wire [ 3:0] sram_awid;    // 注意：互联矩阵出来的 ID 位宽是 5
-    wire [ 0:0] sram_awlock;
-    wire [ 3:0] sram_awcache;
-    wire [ 2:0] sram_awprot;
-    wire [ 7:0] sram_awlen;
-    wire [ 2:0] sram_awsize;
-    wire [ 1:0] sram_awburst;
-    wire        sram_wlast;
-    
-    wire [ 3:0] sram_bid;
+    // --- S0: AXI SRAM Port B (Base: 0x0000_0000, Size: 2MB) ---
+    wire        sram_awvalid; wire        sram_awready; wire [31:0] sram_awaddr;  wire [ 3:0] sram_awid;
+    wire [ 0:0] sram_awlock;  wire [ 3:0] sram_awcache; wire [ 2:0] sram_awprot;  wire [ 7:0] sram_awlen;
+    wire [ 2:0] sram_awsize;  wire [ 1:0] sram_awburst;
 
-    wire [ 3:0] sram_arid;
-    wire [ 0:0] sram_arlock;
-    wire [ 3:0] sram_arcache;
-    wire [ 2:0] sram_arprot;
-    wire [ 7:0] sram_arlen;
-    wire [ 2:0] sram_arsize;
-    wire [ 1:0] sram_arburst;
-    wire        sram_rlast;
-    
-    wire [ 3:0] sram_rid;
+    wire        sram_wvalid;  wire        sram_wready;  wire [31:0] sram_wdata;   wire [ 3:0] sram_wstrb;
+    wire        sram_wlast;
+
+    wire        sram_bvalid;  wire        sram_bready;  wire [ 1:0] sram_bresp;   wire [ 3:0] sram_bid;
+
+    wire        sram_arvalid; wire        sram_arready; wire [31:0] sram_araddr;  wire [ 3:0] sram_arid;
+    wire [ 0:0] sram_arlock;  wire [ 3:0] sram_arcache; wire [ 2:0] sram_arprot;  wire [ 7:0] sram_arlen;
+    wire [ 2:0] sram_arsize;  wire [ 1:0] sram_arburst;
+
+    wire        sram_rvalid;  wire        sram_rready;  wire [31:0] sram_rdata;   wire [ 1:0] sram_rresp;
+    wire        sram_rlast;   wire [ 3:0] sram_rid;
 
     // =========================================================================
     // --- S1: NPU Config Slave (Base: 0x4000_0000, Size: 4KB) ---
@@ -264,7 +252,6 @@ module tb_picorv32;
     // --- Master 0 (CPU) 写响应通道 (B) 接收 ---
     // 这些是从 Interconnect 输出给 CPU 的，但 CPU 根本不看，所以只声明线网作为“垃圾桶”即可
     wire [3:0]  cpu_bid;
-    wire [1:0]  cpu_bresp;
 
     // --- Master 0 (CPU) 读地址通道 (AR) 补齐 ---
     wire [3:0]  cpu_arid;
@@ -286,7 +273,6 @@ module tb_picorv32;
     // --- Master 0 (CPU) 读数据通道 (R) 接收 ---
     // 互联总线吐出，CPU 直接忽略的信号
     wire [3:0]  cpu_rid;
-    wire [1:0]  cpu_rresp;
     wire        cpu_rlast;
     
     // =========================================================================
@@ -413,7 +399,10 @@ module tb_picorv32;
     ) u_interconnect (
         .clk(clk),
         .rst(~resetn), // 取反复位
-
+        // USER 信号显式接零
+        .s_axi_awuser (0),
+        .s_axi_wuser  (0),
+        .s_axi_aruser (0),
         // ======================================================
         // S_AXI 接口 (Master 连入) -> 拼接顺序: {S1(NPU), S0(CPU)}
         // ======================================================
@@ -647,9 +636,39 @@ module tb_picorv32;
     ) main_memory (
         .clk            (clk),
         .resetn         (resetn),
+        
+        // ==========================================================
+        // Port A:闲置，所有输入显式接 0，所有输出显式悬空，AXI Lite 协议
+        // ==========================================================
+        // AXI4-Lite 写地址通道
+        .axi_a_awvalid (1'b0),
+        .axi_a_awaddr  (32'd0),
+        .axi_a_awready (),       // 输出显式悬空
+
+        // AXI4-Lite 写数据通道
+        .axi_a_wvalid  (1'b0),
+        .axi_a_wdata   (32'd0),
+        .axi_a_wstrb   (4'd0),
+        .axi_a_wready  (),       // 输出显式悬空
+
+        // AXI4-Lite 写响应通道
+        .axi_a_bvalid  (),       // 输出显式悬空
+        .axi_a_bresp   (),       // 输出显式悬空
+        .axi_a_bready  (1'b0),
+
+        // AXI4-Lite 读地址通道
+        .axi_a_arvalid (1'b0),
+        .axi_a_araddr  (32'd0),
+        .axi_a_arready (),       // 输出显式悬空
+
+        // AXI4-Lite 读数据通道
+        .axi_a_rvalid  (),       // 输出显式悬空
+        .axi_a_rdata   (),       // 输出显式悬空
+        .axi_a_rresp   (),       // 输出显式悬空
+        .axi_a_rready  (1'b0),
 
         // ==========================================================
-        // Port B: NPU DMA Master 直连，AXI4 Burst 协议
+        // Port B: 连接AXI-INTERCONNECT，AXI4 Burst 协议
         // ==========================================================
         // --- Write Address Channel ---
         .axi_b_awid     (sram_awid),     // 新增：写 ID 接收
