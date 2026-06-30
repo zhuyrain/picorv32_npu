@@ -1,7 +1,8 @@
 `timescale 1ns / 1ps
 
 module axi_dp_sram_hybrid #(
-    parameter MEM_SIZE = 1048576
+    parameter MEM_SIZE = 1048576,
+    parameter S_AXI_ID_WIDTH = 4
 )(
     input  wire        clk,
     input  wire        resetn,
@@ -37,37 +38,53 @@ module axi_dp_sram_hybrid #(
     output wire [ 1:0] axi_a_rresp,
 
     // ==========================================
-    // Port B: 简化 AXI4 Burst，供 NPU DMA Master 直连
+    // 满血版 AXI4-Full Slave 接口 (直连 Interconnect)
     // ==========================================
-    input  wire        axi_b_awvalid,
-    output wire        axi_b_awready,
-    input  wire [31:0] axi_b_awaddr,
-    input  wire [ 7:0] axi_b_awlen,
-    input  wire [ 2:0] axi_b_awsize,
-    input  wire [ 1:0] axi_b_awburst,
+    
+    // --- Write Address Channel ---
+    input  wire [S_AXI_ID_WIDTH-1:0] axi_b_awid,    // 新增：写 ID
+    input  wire                      axi_b_awvalid,
+    output wire                      axi_b_awready,
+    input  wire [31:0]               axi_b_awaddr,
+    input  wire [ 7:0]               axi_b_awlen,
+    input  wire [ 2:0]               axi_b_awsize,
+    input  wire [ 1:0]               axi_b_awburst,
+    input  wire [ 0:0]               axi_b_awlock,  // 新增：忽略
+    input  wire [ 3:0]               axi_b_awcache, // 新增：忽略
+    input  wire [ 2:0]               axi_b_awprot,  // 新增：忽略
 
-    input  wire        axi_b_wvalid,
-    output wire        axi_b_wready,
-    input  wire [31:0] axi_b_wdata,
-    input  wire [ 3:0] axi_b_wstrb,
-    input  wire        axi_b_wlast,
+    // --- Write Data Channel ---
+    input  wire                      axi_b_wvalid,
+    output wire                      axi_b_wready,
+    input  wire [31:0]               axi_b_wdata,
+    input  wire [ 3:0]               axi_b_wstrb,
+    input  wire                      axi_b_wlast,
 
-    output wire        axi_b_bvalid,
-    input  wire        axi_b_bready,
-    output wire [ 1:0] axi_b_bresp,
+    // --- Write Response Channel ---
+    output wire [S_AXI_ID_WIDTH-1:0] axi_b_bid,     // 新增：写响应 ID
+    output wire                      axi_b_bvalid,
+    input  wire                      axi_b_bready,
+    output wire [ 1:0]               axi_b_bresp,
 
-    input  wire        axi_b_arvalid,
-    output wire        axi_b_arready,
-    input  wire [31:0] axi_b_araddr,
-    input  wire [ 7:0] axi_b_arlen,
-    input  wire [ 2:0] axi_b_arsize,
-    input  wire [ 1:0] axi_b_arburst,
+    // --- Read Address Channel ---
+    input  wire [S_AXI_ID_WIDTH-1:0] axi_b_arid,    // 新增：读 ID
+    input  wire                      axi_b_arvalid,
+    output wire                      axi_b_arready,
+    input  wire [31:0]               axi_b_araddr,
+    input  wire [ 7:0]               axi_b_arlen,
+    input  wire [ 2:0]               axi_b_arsize,
+    input  wire [ 1:0]               axi_b_arburst,
+    input  wire [ 0:0]               axi_b_arlock,  // 新增：忽略
+    input  wire [ 3:0]               axi_b_arcache, // 新增：忽略
+    input  wire [ 2:0]               axi_b_arprot,  // 新增：忽略
 
-    output wire        axi_b_rvalid,
-    input  wire        axi_b_rready,
-    output wire [31:0] axi_b_rdata,
-    output wire [ 1:0] axi_b_rresp,
-    output wire        axi_b_rlast
+    // --- Read Data Channel ---
+    output wire [S_AXI_ID_WIDTH-1:0] axi_b_rid,     // 新增：读数据 ID
+    output wire                      axi_b_rvalid,
+    input  wire                      axi_b_rready,
+    output wire [31:0]               axi_b_rdata,
+    output wire [ 1:0]               axi_b_rresp,
+    output wire                      axi_b_rlast
 );
 
     localparam WORD_DEPTH = MEM_SIZE / 4;
@@ -195,6 +212,39 @@ module axi_dp_sram_hybrid #(
         end
     end
 
+    // =========================================================================
+    // AXI4 边带信号处理与 ID 路由反射 (Echo)
+    // =========================================================================
+    
+    // 1. 无视控制属性信号 (SRAM 是被动存储介质，不需要特权/缓存/原子锁逻辑)
+    // input 悬空即被综合器自动优化：awlock, awcache, awprot, arlock, arcache, arprot
+
+    // 2. 写通道 ID 反射 (AWID -> BID)
+    reg [S_AXI_ID_WIDTH-1:0] sram_w_id_reg;
+    
+    always @(posedge clk or negedge resetn) begin
+        if (!resetn) begin
+            sram_w_id_reg <= 0;
+        end else if (axi_b_awvalid && axi_b_awready) begin
+            sram_w_id_reg <= axi_b_awid; // 在写地址握手时锁存 ID
+        end
+    end
+    
+    assign axi_b_bid = sram_w_id_reg; // 静态挂载到 B 通道响应输出
+
+    // 3. 读通道 ID 反射 (ARID -> RID)
+    reg [S_AXI_ID_WIDTH-1:0] sram_r_id_reg;
+    
+    always @(posedge clk or negedge resetn) begin
+        if (!resetn) begin
+            sram_r_id_reg <= 0;
+        end else if (axi_b_arvalid && axi_b_arready) begin
+            sram_r_id_reg <= axi_b_arid; // 在读地址握手时锁存 ID
+        end
+    end
+    
+    assign axi_b_rid = sram_r_id_reg; // 静态挂载到 R 通道数据输出
+    
     // ==========================================================
     // Port B: AXI4 Burst 写通道
     // ==========================================================

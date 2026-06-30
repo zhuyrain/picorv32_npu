@@ -34,7 +34,7 @@ SRC_FILES_1 = $(PROJ_ROOT)/picorv32.v \
               $(SRC_ROOT_NPU)/npu_line_buffer.v \
               $(SRC_ROOT_NPU)/npu_axi_wrapper_burst.v \
               $(SRC_ROOT_NPU)/axi_sram.v \
-              $(SRC_ROOT_NPU)/axil_interconnect.v \
+              $(SRC_ROOT_NPU)/axi_interconnect.v \
               $(SRC_ROOT_NPU)/arbiter.v \
               $(SRC_ROOT_NPU)/priority_encoder.v \
               $(SRC_ROOT_NPU)/axi_dp_sram_hybrid.v \
@@ -105,7 +105,7 @@ VCS_FLAGS += -j8
 #[新增] O2 级别的仿真期优化，极大加快长数据的运算速度
 VCS_FLAGS += -O2
 
-# #[新增] 屏蔽烦人的未连接端口警告
+# #[新增] 打印详细的未连接端口警告信息，用于调试
 # VCS_FLAGS += +lint=TFIPC-L  
 
 # #[可选] 如果你想尝试运行时多核并行仿真，取消下面这行的注释

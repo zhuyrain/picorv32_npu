@@ -7,7 +7,7 @@ module npu_deskew_buffer #(
 )(
     input  wire                               clk,
     input  wire                               rst_n,
-
+    input  wire [7:0]                         cfg_oc_num,
     // 来自 PPU 的独立 8-bit 输入与独立 valid
     input  wire [COLS*DATA_WIDTH-1:0]         ppu_data_in,
     input  wire [COLS-1:0]                    ppu_valid_in,
@@ -59,7 +59,32 @@ module npu_deskew_buffer #(
         end
     endgenerate
 
-    // 见证奇迹的汇师时刻：只要最后一列的 valid 拉高，所有历史数据必将对齐！
-    assign deskewed_valid_out = ppu_valid_in[COLS-1];
+    // =========================================================================
+    // 动态可调 Valid 信号延迟线 (Dynamic Valid Delay Line)
+    // 用 1-bit 的控制流开销，换取 512-bit 数据流的极简！
+    // =========================================================================
+    
+    // 1. 获取当前激活的最后一列的原始 Valid 信号
+    wire current_last_valid = ppu_valid_in[cfg_oc_num - 1];
+
+    // 2. 构建 1-bit 的 63 级移位寄存器 (最高支持 COLS-1 拍延迟)
+    reg [COLS-1:1] valid_delay_pipe;
+    
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            valid_delay_pipe <= 0;
+        end else begin
+            // 每个时钟周期向左移位，新 valid 信号从最低位进入
+            valid_delay_pipe <= {valid_delay_pipe[COLS-2:1], current_last_valid};
+        end
+    end
+
+    // 3. 动态抽头 (Tap) 选择逻辑
+    // 当阵列未跑满时，物理数据的出阵列时间其实被拉长了。
+    // 需要补充的等待拍数 = 物理最大列数 (COLS) - 当前激活列数 (cfg_oc_num)
+    // 如果跑满满载 (cfg_oc_num == COLS)，则无需补充延迟，直接透传。
+    
+    assign deskewed_valid_out = (cfg_oc_num == COLS) ? current_last_valid : 
+                                valid_delay_pipe[COLS - cfg_oc_num];
 
 endmodule
