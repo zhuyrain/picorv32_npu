@@ -512,8 +512,8 @@ module tb_picorv32;
     // 6. 例化 NPU 异构加速子系统
     // =========================================================================
     npu_axi_wrapper_burst #(
-        .SYS_ROWS(64), 
-        .SYS_COLS(64),
+        .SYS_ROWS(4), 
+        .SYS_COLS(4),
         .S_AXI_ID_WIDTH(4)       // 新增：匹配 AXI 互联矩阵扩展后的 5-bit ID
     ) u_npu_wrapper (
         .clk            (clk), 
