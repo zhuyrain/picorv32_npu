@@ -451,6 +451,7 @@ module npu_axi_wrapper_burst #(
     ) u_deskew (
         .clk                (clk),
         .rst_n              (rst_n),
+        .cfg_oc_num         (cfg_oc_num),
         .ppu_data_in        (ppu_data_out),
         .ppu_valid_in       (ppu_valid_out),
         .deskewed_data_out  (deskewed_data_out),
