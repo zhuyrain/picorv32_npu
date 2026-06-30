@@ -2,7 +2,6 @@
 
 module npu_line_buffer #(
     parameter MAX_LINE_WIDTH = 34, // 物理预留的最大行宽 (例如第一层 32+2=34)
-    parameter PAD_SIZE       = 1,  // 左右 Padding 长度
     parameter MAX_IC_GROUPS  = 4,// 物理预留的最大位宽 (对应 IC=16 时为 128-bit)
     parameter DATA_WIDTH = 32      // PE一次吃入位宽     (4 PE时为 32-bit)
 )(
@@ -12,6 +11,7 @@ module npu_line_buffer #(
     // =======================================================
     // 1. 动态层配置接口 (由 CPU 提前配好)
     // =======================================================
+    input  wire                      cfg_pad_size,   // 左右 Padding 长度
     input  wire [5:0]                cfg_line_width, // 当前层实际行宽 (L1: 34, L2: 18)
     input  wire [3:0]                cfg_ic_groups,  // 当前层输入通道组数 (L1: 0, L2: 3)
 
@@ -64,7 +64,7 @@ module npu_line_buffer #(
                 lb_2[i] <= 0;
                 lb_3[i] <= 0;
             end
-            wr_ptr    <= PAD_SIZE; // 初始写指针跳过左侧 Padding 区域
+            wr_ptr    <= {5'b0,cfg_pad_size}; // 初始写指针跳过左侧 Padding 区域
             wr_ig_cnt <= 4'd0;
         end else begin
             
@@ -79,18 +79,12 @@ module npu_line_buffer #(
                     end
                 end
                 // 写指针复位到有效区域起点 (1)
-                wr_ptr    <= PAD_SIZE; 
+                wr_ptr    <= {5'b0,cfg_pad_size}; 
                 wr_ig_cnt <= 4'd0;
             end 
             else if (pixel_wr_en) begin
-                if (wr_ptr < cfg_line_width - PAD_SIZE) begin
-                    // 【魔法打包】：根据 wr_ig_cnt 把 32-bit 放进 128-bit 的对应槽位！
-                    // case (wr_ig_cnt)
-                    //     3'd0: lb_2[wr_ptr][ 31:  0] <= pixel_wr_data;
-                    //     3'd1: lb_2[wr_ptr][ 63: 32] <= pixel_wr_data;
-                    //     3'd2: lb_2[wr_ptr][ 95: 64] <= pixel_wr_data;
-                    //     3'd3: lb_2[wr_ptr][127: 96] <= pixel_wr_data;
-                    // endcase
+                if (wr_ptr < cfg_line_width - {5'b0,cfg_pad_size}) begin
+                    // 【魔法打包】：根据 wr_ig_cnt 把 32-bit 放进lb_3的对应槽位！
                     lb_3[wr_ptr][wr_ig_cnt * 32 +: 32] <= pixel_wr_data;
                     // 分组计数器与 X 坐标递增逻辑
                     if (wr_ig_cnt == cfg_ic_groups) begin

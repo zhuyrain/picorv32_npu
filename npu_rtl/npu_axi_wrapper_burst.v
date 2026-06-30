@@ -146,12 +146,17 @@ module npu_axi_wrapper_burst #(
     wire [15:0] cfg_img_w         = reg_cfg_img_dim[15:0];
     wire [15:0] row_word_count    = reg_cfg_channels[31:16];
     wire [15:0] weight_word_count = reg_cfg_channels[15:0];
+    wire [7:0]  cfg_oc_num        = reg_cfg_quant[31:24]; //输出通道数配置信号
+    wire        lb_cfg_pad_size   = reg_cfg_quant[22];
+    wire        ppu_cfg_relu_en   = reg_cfg_quant[21];
+    wire [4:0]  ppu_cfg_shift     = reg_cfg_quant[20:16];
+    wire [15:0] ppu_cfg_multiplier= {16'b0,reg_cfg_quant[15:0]};
     wire [9:0]  out_stride        = reg_cfg_datapath[31:22];
     wire [3:0]  lb_cfg_ic_groups_r= reg_cfg_datapath[21:18]; //读取时的输入通道组数受line buffer的位宽影响
     wire [7:0]  sa_cfg_weight_num = reg_cfg_datapath[17:10];
     wire [5:0]  lb_cfg_line_width = reg_cfg_datapath[9:4];
     wire [3:0]  lb_cfg_ic_groups  = reg_cfg_datapath[3:0]; //写入时必须以总线位宽写入，因此输入通道组数会更多
-    wire [7:0]  cfg_oc_num        = reg_cfg_datapath2[23:16]; //输出通道数配置信号
+    wire [15:0] ppu_cfg_out_zp   = {16'b0,reg_cfg_datapath2[31:16]}; //量化零点
     wire [15:0] sa_col_group_en   = reg_cfg_datapath2[15:0];  //门控时钟使能配置信号
 
     wire [31:0] current_status = {29'd0, reg_ctrl_status[2], npu_busy, 1'b0};
@@ -362,12 +367,12 @@ module npu_axi_wrapper_burst #(
 
     npu_line_buffer #(
         .MAX_LINE_WIDTH(34), 
-        .PAD_SIZE(1), 
         .MAX_IC_GROUPS(16),     // 若未来扩充更大图像，此参数也可适当放大
         .DATA_WIDTH(SYS_ROWS * 8) // 【核心修改】：自动匹配物理行宽
     ) u_lb (
         .clk              (clk),
         .rst_n            (rst_n),
+        .cfg_pad_size     (lb_cfg_pad_size),
         .cfg_line_width   (lb_cfg_line_width),
         .cfg_ic_groups    (lb_cfg_ic_groups),
         .shift_line_en    (lb_shift_line_en),
@@ -435,10 +440,10 @@ module npu_axi_wrapper_burst #(
     ) u_ppu (
         .clk            (clk),
         .rst_n          (rst_n),
-        .cfg_multiplier ({16'b0,reg_cfg_quant[15:0]}),
-        .cfg_shift      (reg_cfg_quant[20:16]),
-        .cfg_out_zp     (32'd0),
-        .cfg_relu_en    (1'b1), // relu使能 可能也需要参数化
+        .cfg_multiplier (ppu_cfg_multiplier),
+        .cfg_shift      (ppu_cfg_shift),
+        .cfg_out_zp     (ppu_cfg_out_zp),
+        .cfg_relu_en    (ppu_cfg_relu_en), // relu使能
         .valid_in       (ppu_valid_trigger),
         .acc_in         (final_acc_out),
         .valid_out      (ppu_valid_out),
