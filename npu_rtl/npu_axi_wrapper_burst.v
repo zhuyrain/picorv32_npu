@@ -537,6 +537,7 @@ module npu_axi_wrapper_burst #(
     localparam S_COMPUTE         = 4'd6;
     localparam S_UPDATE_WINDOW   = 4'd7;
     localparam S_WAIT_ALL_DONE   = 4'd8;
+    localparam S_SHIFT_SYNC      = 4'd9;
     
 
     reg [3:0] state;
@@ -874,14 +875,27 @@ module npu_axi_wrapper_burst #(
                                 req_load_row <= ~req_load_row;
                             end
 
-                            if (!fifo_almost_full) begin
-                                act_valid_in <= 1'b1;
-                                state        <= S_COMPUTE;
-                            end else begin
-                                act_valid_in <= 1'b0;
-                                state        <= S_WAIT_FIFO;
-                            end
+                            // 【终极修复】：绝不能直接跳 S_COMPUTE！必须等一拍让 Line Buffer 更新生效！
+                            state <= S_SHIFT_SYNC;
                         end
+                    end
+                end
+
+                // ==========================================
+                // 【新增状态】：等待移位寄存器物理生效的 1 拍缓冲
+                // ==========================================
+                S_SHIFT_SYNC: begin
+                    // 此时前一个状态赋予的 lb_shift_line_en 正处于高电平，
+                    // 在本周期的末尾，Line Buffer 才会真正把新行数据吐出来！
+                    // 所以现在必须赶紧把使能拉低，并准备发放数据有效令牌
+                    lb_shift_line_en <= 1'b0; 
+
+                    if (!fifo_almost_full) begin
+                        act_valid_in <= 1'b1;
+                        state        <= S_COMPUTE;
+                    end else begin
+                        act_valid_in <= 1'b0;
+                        state        <= S_WAIT_FIFO;
                     end
                 end
 
@@ -976,49 +990,30 @@ module npu_axi_wrapper_burst #(
                     end
                 end
 
-                // ==========================================
-                // 滑窗更新态：只负责处理“物理换行”时的跨行等待与 Shift
-                // ==========================================
                 S_UPDATE_WINDOW: begin
                     lb_window_base_x <= 6'd0;
                     lb_kernel_kx     <= 2'd0;
                     lb_kernel_ky     <= 2'd0;
                     lb_read_ic_group <= 4'd0; 
                     
-                    // 【⚠️核心时序修正】：oy 已经在 S_COMPUTE 中完成了 +1
-                    // 此时这里的 oy 是更新后的最新值！
-                    
                     // 刚算完倒数第二行，准备算最后一行 (Pad)
-                    // (原为 H-2，现修正为 H-1)
                     if (oy == cfg_img_h - 1) begin 
-                        lb_shift_line_en <= 1'b1; // 绝对安全的 Shift，垫入底部 Pad 0
+                        lb_shift_line_en <= 1'b1; 
                         
-                        if (!fifo_almost_full) begin
-                            act_valid_in <= 1'b1;
-                            state <= S_COMPUTE;
-                        end else begin
-                            state <= S_WAIT_FIFO;
-                        end
+                        // 【终极修复】：同样必须走 Sync 缓冲拍！
+                        state <= S_SHIFT_SYNC;
                     end 
                     // 【Fast-Path 优化】：后台数据早已就绪！
                     else if (req_load_row == ack_load_row) begin
-                        lb_shift_line_en <= 1'b1; // 安全 Shift！数据进入工作区
+                        lb_shift_line_en <= 1'b1; 
                         
-                        // 【极致降维优化】：因为 H-1 和 H-2 已经被拦截 (H-1在上一个if拦截了，H-2是倒数第二行)
-                        // (原为 H-3，现修正为 H-2)
-                        // 当它是 H-2 时不再预取 Row(H)，因为图像到底了！
                         if (oy != cfg_img_h - 2) begin 
                             req_load_row <= ~req_load_row;
                         end
                         
-                        if (!fifo_almost_full) begin
-                            act_valid_in <= 1'b1;
-                            state <= S_COMPUTE;
-                        end else begin
-                            state <= S_WAIT_FIFO;
-                        end
+                        // 【终极修复】：同样必须走 Sync 缓冲拍！
+                        state <= S_SHIFT_SYNC;
                     end 
-                    // 【Slow-Path】：总线太卡，被迫等待
                     else begin
                         state <= S_WAIT_ROW; 
                     end
