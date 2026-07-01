@@ -12,7 +12,7 @@ module npu_line_buffer #(
     // 1. 动态层配置接口 (由 CPU 提前配好)
     // =======================================================
     input  wire                      cfg_pad_size,   // 左右 Padding 长度
-    input  wire [5:0]                cfg_line_width, // 当前层实际行宽 (L1: 34, L2: 18)
+    input  wire [6:0]                cfg_line_width, // 当前层实际行宽 (L1: 34, L2: 18)
     input  wire [3:0]                cfg_ic_groups,  // 当前层输入通道组数 (L1: 0, L2: 3)
 
     // =======================================================
@@ -46,7 +46,7 @@ module npu_line_buffer #(
     reg [MAX_DATA_WIDTH-1:0] lb_3 [0 : MAX_LINE_WIDTH-1]; // Row 3 (异步搬运的一行)
 
     // 内部写指针：X 坐标指针
-    reg [5:0] wr_ptr;
+    reg [6:0] wr_ptr;
     // 【新增】内部写分组指针：负责将 32-bit 自动组装成 128-bit
     reg [3:0] wr_ig_cnt; 
 
@@ -64,7 +64,7 @@ module npu_line_buffer #(
                 lb_2[i] <= 0;
                 lb_3[i] <= 0;
             end
-            wr_ptr    <= {5'b0,cfg_pad_size}; // 初始写指针跳过左侧 Padding 区域
+            wr_ptr    <= {6'b0,cfg_pad_size}; // 初始写指针跳过左侧 Padding 区域
             wr_ig_cnt <= 4'd0;
         end else begin
             
@@ -79,11 +79,11 @@ module npu_line_buffer #(
                     end
                 end
                 // 写指针复位到有效区域起点 (1)
-                wr_ptr    <= {5'b0,cfg_pad_size}; 
+                wr_ptr    <= {6'b0,cfg_pad_size}; 
                 wr_ig_cnt <= 4'd0;
             end 
             else if (pixel_wr_en) begin
-                if (wr_ptr < cfg_line_width - {5'b0,cfg_pad_size}) begin
+                if (wr_ptr < cfg_line_width - {6'b0,cfg_pad_size}) begin
                     // 【魔法打包】：根据 wr_ig_cnt 把 32-bit 放进lb_3的对应槽位！
                     lb_3[wr_ptr][wr_ig_cnt * 32 +: 32] <= pixel_wr_data;
                     // 分组计数器与 X 坐标递增逻辑

@@ -19,6 +19,18 @@ module tb_picorv32;
         $readmemh("firmware.hex", main_memory.ram, 0, 524287);
         $display("[%0t] [Backdoor] SRAM Memory initialized with Real Data!", $time);
     end
+    // =========================================================
+    // 精准 Dump 第一列 (COL[0]) 的全部 64 个 PE
+    // =========================================================
+    genvar dump_i;
+    generate
+        for (dump_i = 0; dump_i < 64; dump_i = dump_i + 1) begin : DUMP_PE_COL0
+            initial begin
+                // genvar 变量 dump_i 在编译时是绝对常量，符合语法要求！
+                $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper.u_sa.ROW[dump_i].COL[0].u_pe);
+            end
+        end
+    endgenerate
 
     initial begin
         // ==========================================
@@ -34,6 +46,8 @@ module tb_picorv32;
         
         // 1. 普通信号：依然保持只看顶层或 wrapper (Level = 1 或 2)
         $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper);
+        $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper.u_acc);
+        $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper.u_lb);
         $fsdbDumpvars(1, tb_picorv32); // 也可以把 CPU 外围总线带上
         
         // 2. [核心修改] 数组信号：不全局 Dump！只指向真正关心的数组实体
