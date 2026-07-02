@@ -2,11 +2,11 @@
 
 module npu_sync_fifo #(
     parameter DATA_WIDTH = 32,
-    parameter ADDR_WIDTH = 4,   // 深度 = 2^4 = 16
-    parameter ALMOST_FULL_THRESH = 12 // 将满阈值 (留 4 拍裕量给飞行数据)
+    parameter ADDR_WIDTH = 4   // 深度 = 2^4 = 16
 )(
     input  wire                  clk,
     input  wire                  rst_n,
+    input  wire [9:0]            almost_full_thresh,// 将满阈值 (留 4 拍裕量给飞行数据)
 
     // 写端口 (来自 npu_deskew_buffer)
     input  wire                  wr_en,
@@ -69,6 +69,6 @@ module npu_sync_fifo #(
     wire [ADDR_WIDTH:0] data_count = wr_ptr - rd_ptr;
     
     // 只要达到或超过阈值，拉高 almost_full！
-    assign almost_full = (data_count >= ALMOST_FULL_THRESH);
+    assign almost_full = (data_count >= almost_full_thresh[ADDR_WIDTH:0]);
 
 endmodule
