@@ -10,6 +10,8 @@ module sa #(
     input  wire        clk,
     input  wire        rst_n,
     input  wire        npu_busy,     // 来自 FSM 的全局激活信号
+    // 【新增】：全局启动脉冲，用于清空 PE 内部的合法标志位
+    input  wire        npu_start_pulse,
     input  wire [15:0] col_group_en, // 来自 CPU 配置寄存器
 
     // 当前网络层实际需要循环的权重数量 (例如第一层填 9，第二层填 36)
@@ -56,6 +58,7 @@ module sa #(
     wire [31:0] psum_wire      [0:ROWS-1][0:COLS-1];
     wire [31:0] weight_wire    [0:ROWS-1][0:COLS-1]; 
     wire        weight_en_wire [0:ROWS-1][0:COLS-1];
+    wire        start_pulse_wire  [0:ROWS-1][0:COLS-1]; // 【新增】用于垂直打拍传递启动脉冲
     
     // 【新增】：全局广播连线，把 weight_row_group 垂直打拍传下去
     wire [3:0]  weight_group_wire [0:ROWS-1][0:COLS-1];
@@ -111,25 +114,32 @@ module sa #(
                 end
 
                 // ----------------------------------------------------
-                // B. 结构级判定：处理垂直流 (psum_in, weight_in, wen)
+                // B. 结构级判定：处理垂直流 (psum_in, weight_in, wen, 【脉冲】)
                 // ----------------------------------------------------
                 wire [31:0] pe_psum_in;
                 wire [31:0] pe_weight_in;
                 wire        pe_wen_in;
                 wire [3:0]  pe_group_in;
+                wire        pe_start_pulse_in; // 【新增】
                 
                 if (r == 0) begin : VERT_EDGE
                     // 最顶层行：直接吃对应的物理独立总线
-                    assign pe_psum_in   = top_bias_in[(c*32)+31 : c*32];
-                    assign pe_weight_in = top_weight_in[(c*32)+31 : c*32];
-                    assign pe_wen_in    = weight_en;
-                    assign pe_group_in  = weight_row_group; // 顶层直接吃外部组号
+                    assign pe_psum_in        = top_bias_in[(c*32)+31 : c*32];
+                    assign pe_weight_in      = top_weight_in[(c*32)+31 : c*32];
+                    assign pe_wen_in         = weight_en;
+                    assign pe_group_in       = weight_row_group; 
+                    
+                    // 【新增】：顶层直接吃外部传进来的全局启动脉冲！
+                    assign pe_start_pulse_in = npu_start_pulse; 
                 end else begin : VERT_INNER
                     // 内部行：吃上方相邻 PE 的输出
-                    assign pe_psum_in   = psum_wire[r-1][c];
-                    assign pe_weight_in = weight_wire[r-1][c];
-                    assign pe_wen_in    = weight_en_wire[r-1][c];
-                    assign pe_group_in  = weight_group_wire[r-1][c]; // 内部吃上方传递的组号
+                    assign pe_psum_in        = psum_wire[r-1][c];
+                    assign pe_weight_in      = weight_wire[r-1][c];
+                    assign pe_wen_in         = weight_en_wire[r-1][c];
+                    assign pe_group_in       = weight_group_wire[r-1][c]; 
+                    
+                    // 【新增】：内部行吃上方 PE 打拍传下来的启动脉冲！
+                    assign pe_start_pulse_in = start_pulse_wire[r-1][c]; 
                 end
 
                 // ----------------------------------------------------
@@ -148,7 +158,11 @@ module sa #(
                     // 配置流  此参数感觉也可以用流动的方式写入
                     .cfg_weight_num (cfg_weight_num),
                     
-                    // 【新增】：告诉 PE 现在外面广播的是第几组？
+                    // 【新增】：缝合全局启动脉冲的输入与输出
+                    .npu_start_pulse_in  (pe_start_pulse_in),
+                    .npu_start_pulse_out (start_pulse_wire[r][c]),
+                    
+                    // 告诉 PE 现在外面广播的是第几组？
                     .weight_group_in  (pe_group_in),
                     .weight_group_out (weight_group_wire[r][c]), // 打一拍传给下方
                     

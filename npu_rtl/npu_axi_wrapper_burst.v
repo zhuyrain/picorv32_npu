@@ -405,7 +405,7 @@ module npu_axi_wrapper_burst #(
     wire write_fsm_idle = (wr_state == 2'd0);
 
     npu_line_buffer #(
-        .MAX_LINE_WIDTH(64), 
+        .MAX_LINE_WIDTH(34), 
         .MAX_IC_GROUPS(16),     // 若未来扩充更大图像，此参数也可适当放大
         .DATA_WIDTH(SYS_ROWS * 8) // 【核心修改】：自动匹配物理行宽
     ) u_lb (
@@ -445,6 +445,7 @@ module npu_axi_wrapper_burst #(
         .clk              (clk),
         .rst_n            (rst_n),
         .npu_busy         (npu_busy),
+        .npu_start_pulse  (npu_start_pulse),
         .col_group_en     (sa_col_group_en),
         .cfg_weight_num   (sa_cfg_weight_num),
         .weight_en        (sa_weight_en),
@@ -510,7 +511,7 @@ module npu_axi_wrapper_burst #(
 
     npu_sync_fifo #(
         .DATA_WIDTH(SYS_COLS * 8), // 自动计算！(4x4=32bit, 32x32=256bit)
-        .ADDR_WIDTH(6)
+        .ADDR_WIDTH(9)
     ) u_out_fifo (
         .clk        (clk),
         .rst_n      (rst_n),
@@ -689,7 +690,8 @@ module npu_axi_wrapper_burst #(
 
             ar_done <= 1'b0;
             // w_done  <= 1'b0;
-
+            bias_ptr        <= 32'd0;
+            weight_ptr      <= 32'd0;
             act_valid_in     <= 1'b0;
             sa_weight_en     <= 1'b0;
             weight_row_group_cnt <= 4'd0;
@@ -698,6 +700,7 @@ module npu_axi_wrapper_burst #(
             acc_preload_bias <= 1'b0;
 
             // 坐标寄存器复位
+            lb_window_base_x <= 6'd0;
             lb_kernel_kx     <= 2'd0;
             lb_kernel_ky     <= 2'd0;
             lb_read_ic_group <= 4'd0;
@@ -755,7 +758,7 @@ module npu_axi_wrapper_burst #(
                         pixel_cnt        <= 16'd0;
                         ig_cnt           <= 3'd0;
                         // weight_cycle_cnt 可以彻底删除了，因为有了 weight_words_left
-
+                        lb_window_base_x <= 6'd0;
                         lb_kernel_kx     <= 2'd0;
                         lb_kernel_ky     <= 2'd0;
                         lb_read_ic_group <= 4'd0;

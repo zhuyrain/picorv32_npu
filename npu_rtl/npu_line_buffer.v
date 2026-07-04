@@ -57,13 +57,13 @@ module npu_line_buffer #(
     // -----------------------------------------------------------
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            // 复位清空
-            for (i = 0; i < MAX_LINE_WIDTH; i = i + 1) begin
-                lb_0[i] <= 0;
-                lb_1[i] <= 0;
-                lb_2[i] <= 0;
-                lb_3[i] <= 0;
-            end
+            // // 复位清空
+            // for (i = 0; i < MAX_LINE_WIDTH; i = i + 1) begin
+            //     lb_0[i] <= 0;
+            //     lb_1[i] <= 0;
+            //     lb_2[i] <= 0;
+            //     lb_3[i] <= 0;
+            // end
             wr_ptr    <= {6'b0,cfg_pad_size}; // 初始写指针跳过左侧 Padding 区域
             wr_ig_cnt <= 4'd0;
         end else begin

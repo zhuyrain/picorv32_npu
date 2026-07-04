@@ -46,8 +46,8 @@ module tb_picorv32;
         
         // 1. 普通信号：依然保持只看顶层或 wrapper (Level = 1 或 2)
         $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper);
-        // $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper.u_acc);
-        // $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper.u_lb);
+        $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper.u_acc);
+        $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper.u_lb);
         $fsdbDumpvars(1, tb_picorv32); // 也可以把 CPU 外围总线带上
         
         // 2. [核心修改] 数组信号：不全局 Dump！只指向真正关心的数组实体
