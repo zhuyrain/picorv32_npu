@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 `default_nettype none
-`define FPGA
+
 // =========================================================================
 // 宏定义路由：通过外部编译选项 (+define+FPGA 或 +define+VCS) 决定模块形态
 // =========================================================================
@@ -606,8 +606,13 @@ module tb_picorv32 (
     // 6. 例化 NPU 异构加速子系统
     // =========================================================================
     npu_axi_wrapper_burst #(
+    `ifdef FPGA
         .SYS_ROWS(4), 
         .SYS_COLS(4),
+    `else
+        .SYS_ROWS(64), 
+        .SYS_COLS(64),
+    `endif
         .S_AXI_ID_WIDTH(4)       // 新增：匹配 AXI 互联矩阵扩展后的 5-bit ID
     ) u_npu_wrapper (
         .clk            (clk), 
@@ -725,7 +730,7 @@ module tb_picorv32 (
     //    Port B: AXI4 Burst，接互联矩阵
     // =========================================================================
     axi_dp_sram_hybrid #(
-        .MEM_SIZE(131072), // 2MB
+        .MEM_SIZE(1048576), // 1MB
         .S_AXI_ID_WIDTH(4) // 匹配互联矩阵扩展后的 5-bit ID
     ) main_memory (
         .clk            (clk),

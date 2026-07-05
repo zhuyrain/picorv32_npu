@@ -103,7 +103,7 @@ module axi_dp_sram_hybrid #(
         // Vivado 综合器可以完美识别并吸收这个过程到 BRAM 的 INIT 字段中
     `ifndef FPGA
         #50; // 仿真为了避开 X 态需要一点延迟，综合时会被 Vivado 自动忽略
-        $readmemh("firmware.hex", ram, 0, 32767);
+        $readmemh("firmware.hex", ram, 0, 262143);
         $display("[%0t] [Boot] SRAM Memory initialized with Real Data!", $time);
     `else
         // 确保路径对齐你的 SRAM 模块实例路径
