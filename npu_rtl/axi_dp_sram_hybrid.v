@@ -97,14 +97,24 @@ module axi_dp_sram_hybrid #(
 `endif
 
     // =========================================================================
-    // FPGA/VCS 共用：SRAM 固件后门烙印
+    // FPGA/VCS 共用：SRAM 固件后门烙印 (支持动态参数加载)
     // =========================================================================
+`ifndef FPGA
+    reg [1023:0] fw_name; // 定义一个超大寄存器用来存文件名字符串
+`endif
+
     initial begin
         // Vivado 综合器可以完美识别并吸收这个过程到 BRAM 的 INIT 字段中
     `ifndef FPGA
         #50; // 仿真为了避开 X 态需要一点延迟，综合时会被 Vivado 自动忽略
-        $readmemh("firmware.hex", ram, 0, 262143);
-        $display("[%0t] [Boot] SRAM Memory initialized with Real Data!", $time);
+        if ($value$plusargs("FW=%s", fw_name)) begin
+            $readmemh(fw_name, ram, 0, 262143);
+            $display("[%0t] [Boot] Dynamic FW Loaded: %s (Size: 1MB)", $time, fw_name);
+        end else begin
+            // 默认兜底加载
+            $readmemh("firmware.hex", ram, 0, 262143);
+            $display("[%0t] [Boot] Default FW Loaded. (Size: 1MB)", $time);
+        end
     `else
         // 确保路径对齐你的 SRAM 模块实例路径
         $readmemh("firmware.mem", ram, 0, 32767);

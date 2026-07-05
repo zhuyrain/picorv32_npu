@@ -418,13 +418,27 @@ module tb_picorv32 (
                 (snoop_w_latched  || (m2_axi_wvalid  && m2_axi_wready)) &&
                 !uart_bvalid_reg) begin
 
-                // 【核心魔法】屏蔽地址低两位！匹配 0x8000_0004 (UART TX FIFO)
-                if ((final_addr & 32'hFFFFFFFC) == 32'h80000004) begin
+                // 屏蔽地址低两位！匹配 0x8000_0004 (UART TX FIFO)
+                if ((final_addr & 32'hFFFFFFFC) == 32'h8000_0004) begin
                     if (final_wstrb[0]) $write("%c", final_wdata[7:0]);
                     // if (final_wstrb[1]) $write("%c", final_wdata[15:8]);
                     // if (final_wstrb[2]) $write("%c", final_wdata[23:16]);
                     // if (final_wstrb[3]) $write("%c", final_wdata[31:24]);
                     $fflush();
+                end
+                
+                // 仿真专用退出嗅探器 (匹配 0x8000_0010)
+                else if ((final_addr & 32'hFFFFFFFC) == 32'h8000_0010) begin
+                    if (final_wdata == 32'd1) begin
+                        $display("\n========================================");
+                        $display(" [VCS EXIT] SIMULATION PASSED!");
+                        $display("========================================\n");
+                    end else begin
+                        $display("\n========================================");
+                        $display(" [VCS EXIT] SIMULATION FAILED (Code: %0d)", final_wdata);
+                        $display("========================================\n");
+                    end
+                    $finish; // 收到退出指令，立即停止仿真！
                 end
                 
                 // 发送 B 响应，完成总线握手
@@ -443,22 +457,38 @@ module tb_picorv32 (
     end
 
     // ==========================================
-    // 极简 Dummy 读通道 (防止 CPU 意外去读挂死总线)
+    // 极简 Dummy 读通道 (精准模拟状态寄存器，防丢包阻塞)
     // ==========================================
-    reg uart_rvalid_reg = 0;
+    reg        uart_rvalid_reg = 0;
+    reg [31:0] uart_rdata_reg  = 0;
+
     assign m2_axi_arready = !uart_rvalid_reg;
     assign m2_axi_rvalid  = uart_rvalid_reg;
-    assign m2_axi_rdata   = 32'b0;
+    assign m2_axi_rdata   = uart_rdata_reg;
     assign m2_axi_rresp   = 2'b00;
 
     always @(posedge clk) begin
         if (!resetn) begin
             uart_rvalid_reg <= 0;
+            uart_rdata_reg  <= 32'b0;
         end else begin
-            if (m2_axi_arvalid && m2_axi_arready) 
+            // 1. 收到读地址请求，锁存地址并准备数据
+            if (m2_axi_arvalid && m2_axi_arready) begin
                 uart_rvalid_reg <= 1'b1;
-            else if (uart_rvalid_reg && m2_axi_rready) 
+                
+                // 精确译码 UART Status 寄存器 (偏移 0x08)
+                if ((m2_axi_araddr & 32'hFFFFFFFC) == 32'h8000_0008) begin
+                    // 模拟真实的 AXI Uartlite 状态：Bit 3 = 0 (未满), Bit 2 = 1 (为空)
+                    uart_rdata_reg <= 32'h0000_0004; 
+                end else begin
+                    // 其他读地址默认返回 0
+                    uart_rdata_reg <= 32'h0000_0000;
+                end
+            end 
+            // 2. 完成读数据握手
+            else if (uart_rvalid_reg && m2_axi_rready) begin
                 uart_rvalid_reg <= 1'b0;
+            end
         end
     end
 `endif
