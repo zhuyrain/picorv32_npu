@@ -6,7 +6,7 @@ module axi_dp_sram_hybrid #(
 )(
     input  wire        clk,
     input  wire        resetn,
-
+`ifndef FPGA
     // ==========================================
     // Port A: 供 CPU 互联矩阵访问
     // ==========================================
@@ -36,6 +36,7 @@ module axi_dp_sram_hybrid #(
     input  wire        axi_a_rready,
     output wire [31:0] axi_a_rdata,
     output wire [ 1:0] axi_a_rresp,
+`endif
 
     // ==========================================
     // 满血版 AXI4-Full Slave 接口 (直连 Interconnect)
@@ -88,17 +89,41 @@ module axi_dp_sram_hybrid #(
 );
 
     localparam WORD_DEPTH = MEM_SIZE / 4;
-
+`ifdef FPGA
+    // 【修改】：强制告诉 Vivado，无论如何必须给我用 BRAM！
+    (* ram_style = "block" *) reg [31:0] ram [0:WORD_DEPTH-1];
+`else
     reg [31:0] ram [0:WORD_DEPTH-1];
+`endif
+
+    // =========================================================================
+    // FPGA/VCS 共用：SRAM 固件后门烙印
+    // =========================================================================
+    initial begin
+        // Vivado 综合器可以完美识别并吸收这个过程到 BRAM 的 INIT 字段中
+    `ifndef FPGA
+        #50; // 仿真为了避开 X 态需要一点延迟，综合时会被 Vivado 自动忽略
+        $readmemh("firmware.hex", ram, 0, 32767);
+        $display("[%0t] [Boot] SRAM Memory initialized with Real Data!", $time);
+    `else
+        // 确保路径对齐你的 SRAM 模块实例路径
+        $readmemh("firmware.mem", ram, 0, 32767);
+        $display("[%0t] [Boot] SRAM Memory initialized with Real Data!", $time);
+    `endif
+    end
 
     // ==========================================================
     // 固定响应：OKAY
     // ==========================================================
+`ifndef FPGA
     assign axi_a_bresp = 2'b00;
     assign axi_a_rresp = 2'b00;
+`endif
+
     assign axi_b_bresp = 2'b00;
     assign axi_b_rresp = 2'b00;
 
+`ifndef FPGA
     // ==========================================================
     // Port A: AXI4-Lite 写通道状态机
     // ==========================================================
@@ -152,7 +177,7 @@ module axi_dp_sram_hybrid #(
             if ((aw_latched_a || aw_fire_a) &&
                 (w_latched_a  || w_fire_a ) &&
                 !b_valid_a) begin
-
+            `ifndef FPGA
                 if (f_strb_a[0])
                     ram[f_addr_a >> 2][ 7: 0] <= f_data_a[ 7: 0];
 
@@ -164,7 +189,7 @@ module axi_dp_sram_hybrid #(
 
                 if (f_strb_a[3])
                     ram[f_addr_a >> 2][31:24] <= f_data_a[31:24];
-
+            `endif
                 b_valid_a    <= 1'b1;
                 aw_latched_a <= 1'b0;
                 w_latched_a  <= 1'b0;
@@ -194,14 +219,16 @@ module axi_dp_sram_hybrid #(
         if (!resetn) begin
             ar_ready_a <= 1'b1;
             r_valid_a  <= 1'b0;
-            r_data_a   <= 32'b0;
+            // r_data_a   <= 32'b0;
         end else begin
 
             // 1. 捕获 AR 通道，并从 SRAM 读数据
             if (axi_a_arvalid && ar_ready_a) begin
+            `ifndef FPGA
                 r_data_a   <= ram[axi_a_araddr >> 2];
                 r_valid_a  <= 1'b1;
                 ar_ready_a <= 1'b0;
+            `endif
             end
 
             // 2. R 通道数据被 master 接收后，恢复 ar_ready
@@ -212,6 +239,7 @@ module axi_dp_sram_hybrid #(
         end
     end
 
+`endif
     // =========================================================================
     // AXI4 边带信号处理与 ID 路由反射 (Echo)
     // =========================================================================
@@ -302,6 +330,7 @@ module axi_dp_sram_hybrid #(
 
             // 2. 接收每个 W beat，并写 SRAM
             if (w_fire_b && wr_active_b) begin
+            `ifndef FPGA
                 if (axi_b_wstrb[0])
                     ram[wr_addr_b >> 2][ 7: 0] <= axi_b_wdata[ 7: 0];
 
@@ -313,7 +342,7 @@ module axi_dp_sram_hybrid #(
 
                 if (axi_b_wstrb[3])
                     ram[wr_addr_b >> 2][31:24] <= axi_b_wdata[31:24];
-
+            `endif
                 if (wr_last_beat_b) begin
                     wr_active_b <= 1'b0;
                     w_ready_b   <= 1'b0;
@@ -369,7 +398,7 @@ module axi_dp_sram_hybrid #(
             ar_ready_b  <= 1'b1;
             r_valid_b   <= 1'b0;
             r_last_b    <= 1'b0;
-            r_data_b    <= 32'b0;
+            // r_data_b    <= 32'b0;
             rd_active_b <= 1'b0;
             rd_addr_b   <= 32'b0;
             rd_len_b    <= 8'b0;
@@ -386,8 +415,9 @@ module axi_dp_sram_hybrid #(
                 rd_cnt_b    <= 8'd0;
                 rd_size_b   <= axi_b_arsize;
                 rd_burst_b  <= axi_b_arburst;
-
+            `ifndef FPGA
                 r_data_b    <= ram[axi_b_araddr >> 2];
+            `endif
                 r_valid_b   <= 1'b1;
                 r_last_b    <= (axi_b_arlen == 8'd0);
                 ar_ready_b  <= 1'b0;
@@ -403,12 +433,50 @@ module axi_dp_sram_hybrid #(
                 end else begin
                     rd_addr_b <= rd_next_addr_b;
                     rd_cnt_b  <= rd_cnt_b + 8'd1;
+                `ifndef FPGA
                     r_data_b  <= ram[rd_next_addr_b >> 2];
+                `endif
                     r_last_b  <= ((rd_cnt_b + 8'd1) == rd_len_b);
                 end
             end
         end
     end
+
+`ifdef FPGA
+    // =========================================================================
+    // 【终极 BRAM 映射魔法】：提取纯净的物理 RAM 控制信号
+    // =========================================================================
+    wire        bram_we;
+    wire [29:0] bram_waddr;
+    wire        bram_re;
+    wire [29:0] bram_raddr;
+
+    // 写端口映射：只有在写握手且 active 时写
+    assign bram_we    = (w_fire_b && wr_active_b);
+    assign bram_waddr = wr_addr_b[31:2];
+
+    // 读端口映射：将分散在各个 if 里的读条件合并
+    assign bram_re    = ar_fire_b || (r_fire_b && !rd_last_beat_b);
+    // 地址选择：用一个干净的多路复用器 (MUX) 在外部选好地址，再送给 RAM
+    assign bram_raddr = ar_fire_b ? axi_b_araddr[31:2] : rd_next_addr_b[31:2];
+
+    // 物理 BRAM 的纯净写端口
+    always @(posedge clk) begin
+        if (bram_we) begin
+            if (axi_b_wstrb[0]) ram[bram_waddr][ 7: 0] <= axi_b_wdata[ 7: 0];
+            if (axi_b_wstrb[1]) ram[bram_waddr][15: 8] <= axi_b_wdata[15: 8];
+            if (axi_b_wstrb[2]) ram[bram_waddr][23:16] <= axi_b_wdata[23:16];
+            if (axi_b_wstrb[3]) ram[bram_waddr][31:24] <= axi_b_wdata[31:24];
+        end
+    end
+
+    // 物理 BRAM 的纯净读端口
+    always @(posedge clk) begin
+        if (bram_re) begin
+            r_data_b <= ram[bram_raddr];
+        end
+    end
+`endif
 
     `ifdef SIM_CHECKS
         // ==========================================================

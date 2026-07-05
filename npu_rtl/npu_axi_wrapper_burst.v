@@ -406,7 +406,7 @@ module npu_axi_wrapper_burst #(
 
     npu_line_buffer #(
         .MAX_LINE_WIDTH(34), 
-        .MAX_IC_GROUPS(16),     // 若未来扩充更大图像，此参数也可适当放大
+        .MAX_IC_GROUPS(4),     // 若未来扩充更大图像，此参数也可适当放大
         .DATA_WIDTH(SYS_ROWS * 8) // 【核心修改】：自动匹配物理行宽
     ) u_lb (
         .clk              (clk),
@@ -511,7 +511,7 @@ module npu_axi_wrapper_burst #(
 
     npu_sync_fifo #(
         .DATA_WIDTH(SYS_COLS * 8), // 自动计算！(4x4=32bit, 32x32=256bit)
-        .ADDR_WIDTH(9)
+        .ADDR_WIDTH(6)
     ) u_out_fifo (
         .clk        (clk),
         .rst_n      (rst_n),
