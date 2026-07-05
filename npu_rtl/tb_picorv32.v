@@ -1,5 +1,6 @@
 `timescale 1ns / 1ps
 `default_nettype none
+`define FPGA
 // =========================================================================
 // 宏定义路由：通过外部编译选项 (+define+FPGA 或 +define+VCS) 决定模块形态
 // =========================================================================
@@ -9,7 +10,7 @@ module tb_picorv32 (
     // FPGA 上板时的物理端口
     input  wire        clk,
     input  wire        resetn,
-
+    input  wire        interconnect_aresetn,
     // =====================================
     // 暴露给外部 Vivado AXI Uartlite IP 的 AXI4-Lite 接口
     // =====================================
@@ -40,20 +41,6 @@ module tb_picorv32 (
 `endif
 
     wire trap;
-
-    // =========================================================================
-    // FPGA/VCS 共用：SRAM 固件后门烙印
-    // =========================================================================
-    initial begin
-        // Vivado 综合器可以完美识别并吸收这个过程到 BRAM 的 INIT 字段中
-        `ifndef FPGA
-        #50; // 仿真为了避开 X 态需要一点延迟，综合时会被 Vivado 自动忽略
-        `endif
-        
-        // 确保路径对齐你的 SRAM 模块实例路径
-        $readmemh("firmware.hex", tb_picorv32.main_memory.ram, 0, 32767);
-        $display("[%0t] [Boot] SRAM Memory initialized with Real Data!", $time);
-    end
 
 `ifdef VCS
     // =========================================================================
@@ -383,9 +370,10 @@ module tb_picorv32 (
     assign uart_axi_araddr  = m2_axi_araddr;
     assign uart_axi_arvalid = m2_axi_arvalid;
     assign m2_axi_arready   = uart_axi_arready;
-    assign uart_axi_rdata   = m2_axi_rdata;
-    assign uart_axi_rresp   = m2_axi_rresp;
-    assign uart_axi_rvalid  = m2_axi_rvalid;
+    // 【修改后】：正确的读数据通道方向 (Slave -> Master)
+    assign m2_axi_rdata     = uart_axi_rdata;   // UART 的数据传给 CPU
+    assign m2_axi_rresp     = uart_axi_rresp;   // UART 的响应传给 CPU
+    assign m2_axi_rvalid    = uart_axi_rvalid;  // UART 的有效信号传给 CPU
     assign uart_axi_rready  = m2_axi_rready;
 `else
     // 【仿真模式】：绝对抗乱序与抗 GCC 优化的终极 UART 嗅探器 (Bullet-proof Dummy UART)
@@ -499,7 +487,11 @@ module tb_picorv32 (
         .M_ADDR_WIDTH({32'd12, 32'd12, 32'd21})
     ) u_interconnect (
         .clk(clk),
+    `ifdef FPGA
+        .rst(~interconnect_aresetn), // 取反复位
+    `else
         .rst(~resetn), // 取反复位
+    `endif
         // USER 信号显式接零
         .s_axi_awuser (2'd0),
         .s_axi_wuser  (2'd0),
@@ -738,7 +730,7 @@ module tb_picorv32 (
     ) main_memory (
         .clk            (clk),
         .resetn         (resetn),
-        
+    `ifndef FPGA
         // ==========================================================
         // Port A:闲置，所有输入显式接 0，所有输出显式悬空，AXI Lite 协议
         // ==========================================================
@@ -768,7 +760,7 @@ module tb_picorv32 (
         .axi_a_rdata   (),       // 输出显式悬空
         .axi_a_rresp   (),       // 输出显式悬空
         .axi_a_rready  (1'b0),
-
+    `endif
         // ==========================================================
         // Port B: 连接AXI-INTERCONNECT，AXI4 Burst 协议
         // ==========================================================

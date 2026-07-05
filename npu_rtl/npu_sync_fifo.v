@@ -25,8 +25,12 @@ module npu_sync_fifo #(
     localparam DEPTH = 1 << ADDR_WIDTH;
 
     // 物理内存
+`ifdef FPGA
+    // 【修改】：强制Vivado必须用 BRAM！
+    (* ram_style = "block" *) reg [DATA_WIDTH-1:0] mem [0:DEPTH-1];
+`else
     reg [DATA_WIDTH-1:0] mem [0:DEPTH-1];
-
+`endif
     // 读写指针 (多出1位用于判断空满)
     reg [ADDR_WIDTH:0] wr_ptr;
     reg [ADDR_WIDTH:0] rd_ptr;
