@@ -110,10 +110,9 @@ module npu_line_buffer #(
     // 1. 抽出完整的 MAX_DATA_WIDTH-bit 超级像素
     always @(*) begin
         case (kernel_ky)
-            2'd0: full_pixel = lb_0[read_idx];
-            2'd1: full_pixel = lb_1[read_idx];
-            2'd2: full_pixel = lb_2[read_idx];
-            default: full_pixel = {MAX_DATA_WIDTH{1'b0}};
+            2'd0:    full_pixel = lb_0[read_idx];
+            2'd1:    full_pixel = lb_1[read_idx];
+            default: full_pixel = lb_2[read_idx];
         endcase
     end
 

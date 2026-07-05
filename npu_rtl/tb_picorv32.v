@@ -69,7 +69,8 @@ module tb_picorv32 (
             $finish;
         end
     end
-
+    
+    `ifndef REGRESS
     initial begin
         $display("Dumping FSDB wave...");
         $fsdbDumpfile("picorv32_soc.fsdb");
@@ -78,6 +79,7 @@ module tb_picorv32 (
         $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper.u_lb);
         $fsdbDumpvars(1, tb_picorv32); 
     end
+    `endif
 `endif
 
     // =========================================================================

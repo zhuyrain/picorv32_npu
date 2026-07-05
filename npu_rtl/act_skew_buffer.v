@@ -7,9 +7,6 @@ module act_skew_buffer #(
     input  wire                               clk,
     input  wire                               rst_n,
     
-    // --- 控制信号 ---
-    input  wire                               pad_en,      // 1: 边界补零(Padding)模式; 0: 正常读取模式
-    
     // ====================================================
     // --- 数据与对应的有效令牌输入 ---
     // ====================================================
@@ -27,10 +24,8 @@ module act_skew_buffer #(
     // 1. 前置 Padding 逻辑 (处理平齐数据)
     // ==========================================
     wire [(ROWS * DATA_WIDTH) - 1 : 0] padded_flat_in;
-    
-    // 注意：pad_en 为 1 时，输入全 0，但这【仍然是有效计算】，
-    // 外部的 act_valid_in 依然为 1，所以令牌不需要被 pad_en 屏蔽！
-    assign padded_flat_in = pad_en ? {(ROWS * DATA_WIDTH){1'b0}} : act_in_flat;
+
+    assign padded_flat_in = act_in_flat;
 
 
     // ==========================================

@@ -405,7 +405,7 @@ module npu_axi_wrapper_burst #(
     wire write_fsm_idle = (wr_state == 2'd0);
 
     npu_line_buffer #(
-        .MAX_LINE_WIDTH(34), 
+        .MAX_LINE_WIDTH(64), 
         .MAX_IC_GROUPS(16),     // 若未来扩充更大图像，此参数也可适当放大
         .DATA_WIDTH(SYS_ROWS * 8) // 【核心修改】：自动匹配物理行宽
     ) u_lb (
@@ -430,7 +430,6 @@ module npu_axi_wrapper_burst #(
     ) u_skew (
         .clk                  (clk),
         .rst_n                (rst_n),
-        .pad_en               (1'b0),
         .act_in_flat          (lb_window_pixel_out),
         .act_valid_in         (act_valid_in),
         .act_out_skewed       (act_out_skewed),
@@ -1220,10 +1219,6 @@ module npu_axi_wrapper_burst #(
                                 wr_state <= 2'd1;
                             end
                         end
-                    end
-
-                    default: begin
-                        wr_state <= 2'd0;
                     end
                 endcase
             end

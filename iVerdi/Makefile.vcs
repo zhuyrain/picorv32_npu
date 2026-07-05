@@ -68,7 +68,8 @@ FIRMWARES = firmware_byte_cpu_alu.hex \
             firmware_byte_bus_stress.hex \
             firmware_byte_quant_bound.hex \
             firmware_byte_irq_storm.hex \
-            firmware_byte_vgg_full.hex
+            firmware_byte_vgg_full.hex \
+			firmware_byte_reg_bounds.hex
 
 # ----------------------------------------------------------------------------
 # 4. VCS 编译参数 (Compile Flags)
@@ -143,25 +144,20 @@ wave:
 # 注意：regress 不再直接依赖 compile，而是利用嵌套 make 强制开启 COV=1 重新编译
 regress:
 	@echo "================================================="
-	@echo "  🚀 Re-compiling RTL with Coverage Instrumentation"
+	@echo "  Re-compiling RTL with Coverage Instrumentation"
 	@echo "================================================="
 	@$(MAKE) compile COV=1 -f Makefile.vcs
 	@echo "================================================="
-	@echo "  🚀 Starting Firmware Regression Testing"
+	@echo "  Starting Firmware Regression Testing"
 	@echo "================================================="
 	@for fw in $(FIRMWARES); do \
 		echo "-------------------------------------------------"; \
-		echo " ▶️ Running Test: $$fw"; \
+		echo " Running Test: $$fw"; \
 		echo "-------------------------------------------------"; \
 		ln -sf $(FW_DIR)/$$fw $(WORK_DIR)/$$fw; \
 		cd $(WORK_DIR) && ./simv $(SIM_FLAGS) -cm_name $$fw +FW=$$fw; \
 	done
-	@echo "================================================="
-	@echo "  📊 Merging Coverage and Generating HTML Report"
-	@echo "================================================="
-	cd $(WORK_DIR) && urg -dir simv.vdb -format html -report urgReport
-	@echo "🎉 Regression Finished!"
-	@echo "👉 Please open: $(WORK_DIR)/urgReport/dashboard.html"
+	@echo "Regression Finished!"
 
 check: prepare
 	@$(MAKE) compile CHECK=1

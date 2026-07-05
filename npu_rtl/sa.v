@@ -47,6 +47,19 @@ module sa #(
     wire [COL_GROUPS-1:0] gated_clk;
 
     // ==========================================
+    // 0. 【修改】：使用全局常开时钟，对启动脉冲打一拍，防止被门控时钟吞噬
+    // ==========================================
+    reg npu_start_pulse_d1;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            npu_start_pulse_d1 <= 1'b0;
+        end else begin
+            // 依赖常开全局 clk 进行捕捉
+            npu_start_pulse_d1 <= npu_start_pulse;
+        end
+    end
+
+    // ==========================================
     // 1. 内部连线网 (Wire Mesh) 定义
     // [r][c] 表示第 r 行、第 c 列的信号
     // ==========================================
@@ -130,7 +143,7 @@ module sa #(
                     assign pe_group_in       = weight_row_group; 
                     
                     // 【新增】：顶层直接吃外部传进来的全局启动脉冲！
-                    assign pe_start_pulse_in = npu_start_pulse; 
+                    assign pe_start_pulse_in = npu_start_pulse_d1; 
                 end else begin : VERT_INNER
                     // 内部行：吃上方相邻 PE 的输出
                     assign pe_psum_in        = psum_wire[r-1][c];
