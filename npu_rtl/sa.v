@@ -159,9 +159,13 @@ module sa #(
                 // C. 完美例化 PE
                 // ----------------------------------------------------
                 pe #(
-                    // 现在的 PE 在Conv层计算只需要存属于自己的 9 个权重！
+                    // 现在的 PE 在Conv层计算只需要存属于自己的权重！
                     // 但是最后的全连接层需要存储64个权重
+                `ifdef FPGA
+                    .MAX_WEIGHTS    (36),
+                `else
                     .MAX_WEIGHTS    (64),
+                `endif
                     // 将计算好的本行专属 Group 号作为参数传入 PE
                     .MY_GROUP       (MY_WEIGHT_GROUP) 
                 ) u_pe (

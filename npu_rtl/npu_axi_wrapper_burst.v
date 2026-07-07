@@ -404,9 +404,14 @@ module npu_axi_wrapper_burst #(
     // 提供给主状态机的标志位
     wire write_fsm_idle = (wr_state == 2'd0);
 
-    npu_line_buffer #(
+    npu_line_buffer #( 
+    `ifdef FPGA
+        .MAX_LINE_WIDTH(34), 
+        .MAX_IC_GROUPS(4),
+    `else
         .MAX_LINE_WIDTH(64), 
-        .MAX_IC_GROUPS(16),     // 若未来扩充更大图像，此参数也可适当放大
+        .MAX_IC_GROUPS(16),
+    `endif
         .DATA_WIDTH(SYS_ROWS * 8) // 【核心修改】：自动匹配物理行宽
     ) u_lb (
         .clk              (clk),
@@ -510,7 +515,11 @@ module npu_axi_wrapper_burst #(
 
     npu_sync_fifo #(
         .DATA_WIDTH(SYS_COLS * 8), // 自动计算！(4x4=32bit, 32x32=256bit)
+    `ifdef FPGA
+        .ADDR_WIDTH(6)
+    `else
         .ADDR_WIDTH(10)
+    `endif
     ) u_out_fifo (
         .clk        (clk),
         .rst_n      (rst_n),
