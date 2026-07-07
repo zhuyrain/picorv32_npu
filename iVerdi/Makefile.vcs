@@ -1,5 +1,5 @@
 # ============================================================================
-# VCS Simulation Makefile for RISC-V / NPU SoC (64x64 Array Ready)
+# VCS Simulation Makefile for RISC-V / NPU SoC (Coverage Regression Edition)
 # ============================================================================
 
 # ----------------------------------------------------------------------------
@@ -11,6 +11,9 @@ export PROJ_ROOT
 
 # 工作目录设置 (所有编译产物隔离，保持源码干净)
 WORK_DIR  := $(CUR_DIR)/vcs_work
+
+# [新增] 回归测试专属固件目录
+FW_DIR    := $(CUR_DIR)/regress/firmwares
 
 $(info [INFO] Auto-detected PROJ_ROOT: $(PROJ_ROOT))
 
@@ -42,42 +45,6 @@ SRC_FILES_1 = $(PROJ_ROOT)/picorv32.v \
 TB_TOP_1    = tb_picorv32
 FSDB_NAME_1 = picorv32_soc.fsdb
 
-# [配置 2] 裸核 NPU 子系统独立仿真
-SRC_FILES_2 = $(SRC_ROOT_NPU)/pe.v \
-              $(SRC_ROOT_NPU)/act_skew_buffer.v \
-              $(SRC_ROOT_NPU)/sa_4_4.v \
-              $(SRC_ROOT_NPU)/npu_bottom_acc.v \
-              $(SRC_ROOT_NPU)/npu_ppu.v \
-              $(SRC_ROOT_NPU)/npu_deskew_buffer.v \
-              $(SRC_ROOT_NPU)/npu_line_buffer.v \
-              $(SRC_ROOT_NPU)/tb_npu_core.v
-TB_TOP_2    = tb_npu_core
-FSDB_NAME_2 = tb_npu_core.fsdb
-
-# [配置 3] NPU & 虚拟CPU 系统级仿真
-SRC_FILES_3 = $(SRC_ROOT_NPU)/pe.v \
-              $(SRC_ROOT_NPU)/act_skew_buffer.v \
-              $(SRC_ROOT_NPU)/sa_4_4.v \
-              $(SRC_ROOT_NPU)/npu_bottom_acc.v \
-              $(SRC_ROOT_NPU)/npu_ppu.v \
-              $(SRC_ROOT_NPU)/npu_deskew_buffer.v \
-              $(SRC_ROOT_NPU)/npu_line_buffer.v \
-              $(SRC_ROOT_NPU)/npu_axi_wrapper_lite.v \
-              $(SRC_ROOT_NPU)/axi_sram.v \
-              $(SRC_ROOT_NPU)/axil_interconnect.v \
-              $(SRC_ROOT_NPU)/arbiter.v \
-              $(SRC_ROOT_NPU)/priority_encoder.v \
-              $(SRC_ROOT_NPU)/tb_npu_system.v
-TB_TOP_3    = tb_npu_system
-FSDB_NAME_3 = tb_npu_system.fsdb
-
-# [配置 4] 双端口Burst SRAM & 虚拟CPU 仿真 (从iverilog补齐)
-SRC_FILES_4 = $(SRC_ROOT_NPU)/axi_dp_sram_hybrid.v \
-              $(SRC_ROOT_NPU)/tb_axi_dp_sram_hybrid_burst.v
-TB_TOP_4    = tb_axi_dp_sram_hybrid_burst
-FSDB_NAME_4 = tb_axi_dp_sram_hybrid_burst.fsdb
-
-
 SRC_FILES = $(SRC_FILES_$(CASE))
 TB_TOP    = $(TB_TOP_$(CASE))
 FSDB_NAME = $(FSDB_NAME_$(CASE))
@@ -88,7 +55,24 @@ $(error "错误: 未知的仿真用例 CASE=$(CASE)！请指定 1~4")
 endif
 
 # ----------------------------------------------------------------------------
-# 3. VCS 编译参数 (Compile Flags)
+# 3. 固件回归列表 (Firmware Regression List)
+# ----------------------------------------------------------------------------
+# 在这里填入你所有的测试固件名字 (会自动去 FW_DIR 目录下寻找它们)
+FIRMWARES = firmware_byte_cpu_alu.hex \
+            firmware_byte_axi_cfg.hex \
+            firmware_byte_axi_burst_edge.hex \
+            firmware_byte_math_ones.hex \
+            firmware_byte_dim_stretch.hex \
+            firmware_byte_fc_reshape.hex \
+            firmware_byte_conv_1x1.hex \
+            firmware_byte_bus_stress.hex \
+            firmware_byte_quant_bound.hex \
+            firmware_byte_irq_storm.hex \
+            firmware_byte_vgg_full.hex \
+			firmware_byte_reg_bounds.hex
+
+# ----------------------------------------------------------------------------
+# 4. VCS 编译参数 (Compile Flags)
 # ----------------------------------------------------------------------------
 VCS_FLAGS := -full64 -sverilog
 VCS_FLAGS += -timescale=1ns/1ps
@@ -99,40 +83,33 @@ VCS_FLAGS += -Mdir=csrc
 VCS_FLAGS += -o simv
 VCS_FLAGS += -l compile.log
 
-#[新增] 多核极速编译
-VCS_FLAGS += -j8
+# 多核极速编译与 O2 优化
+VCS_FLAGS += -j8 -O2
 
-#[新增] O2 级别的仿真期优化，极大加快长数据的运算速度
-VCS_FLAGS += -O2
+# ----------------------------------------------------------------------------
+# 5. 仿真执行参数 (Simulation Flags)
+# ----------------------------------------------------------------------------
+SIM_FLAGS := -l sim.log
+SIM_FLAGS += +fsdb+mda 
+SIM_FLAGS += +fsdbfile+$(FSDB_NAME)  
+SIM_FLAGS += -no_save
 
-# #[新增] 打印详细的未连接端口警告信息，用于调试
-# VCS_FLAGS += +lint=TFIPC-L  
+# ============================================================================
+# 【核心隔离】：仅当 COV=1 时，才注入沉重的覆盖率收集 Flag！
+# ============================================================================
+ifeq ($(COV), 1)
+VCS_FLAGS += -cm line+tgl+cond+fsm+branch
+SIM_FLAGS += -cm line+tgl+cond+fsm+branch
+endif
 
-# #[可选] 如果你想尝试运行时多核并行仿真，取消下面这行的注释
-# VCS_FLAGS += -fgp
-
-# 如果你想启用 iverilog 中的 SIM_CHECKS 宏，可以通过 make CHECK=1 传入
 ifeq ($(CHECK), 1)
 VCS_FLAGS += +define+SIM_CHECKS
 endif
 
 # ----------------------------------------------------------------------------
-# 4. 仿真执行参数 (Simulation Flags)
+# 6. 执行目标 (Targets)
 # ----------------------------------------------------------------------------
-SIM_FLAGS := -l sim.log
-SIM_FLAGS += +fsdb+mda 
-SIM_FLAGS += +fsdbfile+$(FSDB_NAME)  # 强制指定输出的 fsdb 文件名
-
-# [新增] 阻止 ASLR 检测带来的二次重启，让启动更丝滑
-SIM_FLAGS += -no_save
-
-# # [可选] 如果上面开启了 -fgp，取消下面这行的注释，分配 4 个线程进行仿真
-# SIM_FLAGS += -fgp=4
-
-# ----------------------------------------------------------------------------
-# 5. 执行目标 (Targets)
-# ----------------------------------------------------------------------------
-.PHONY: all prepare compile sim wave clean check
+.PHONY: all prepare compile sim wave clean check regress
 
 all: compile sim wave
 
@@ -142,22 +119,17 @@ prepare:
 # 编译
 compile: prepare
 	@echo "================================================="
-	@echo "  [1/3] Starting VCS Compilation (CASE=$(CASE))"
+	@echo "  [1/3] Starting VCS Compilation (COV=$(COV))"
 	@echo "================================================="
 	cd $(WORK_DIR) && vcs $(VCS_FLAGS) $(SRC_FILES)
 
-# 仿真
+# 单次仿真 (默认寻找工程根目录下的 firmware.hex 进行单次极速调试，不开启覆盖率)
 sim:
 	@echo "================================================="
-	@echo "  [2/3] Running Simulation & Dumping FSDB"
+	@echo "  [2/3] Running Single Simulation & Dumping FSDB"
 	@echo "================================================="
-	@# [新增行] 将当前目录下的 firmware.hex 软链接到工作区
 	@ln -sf $(CUR_DIR)/firmware.hex $(WORK_DIR)/ 
 	cd $(WORK_DIR) && ./simv $(SIM_FLAGS)
-
-# 带 SIM_CHECKS 宏的快速编译通道
-check: prepare
-	@$(MAKE) compile CHECK=1
 
 # 后台呼出 Verdi
 wave:
@@ -165,6 +137,30 @@ wave:
 	@echo "  [3/3] Opening Waveform in Verdi"
 	@echo "================================================="
 	cd $(WORK_DIR) && verdi -dbdir simv.daidir -ssf $(FSDB_NAME) &
+
+# ============================================================================
+# 自动化回归与覆盖率合并 (make regress)
+# ============================================================================
+# 注意：regress 不再直接依赖 compile，而是利用嵌套 make 强制开启 COV=1 重新编译
+regress:
+	@echo "================================================="
+	@echo "  Re-compiling RTL with Coverage Instrumentation"
+	@echo "================================================="
+	@$(MAKE) compile COV=1 -f Makefile.vcs
+	@echo "================================================="
+	@echo "  Starting Firmware Regression Testing"
+	@echo "================================================="
+	@for fw in $(FIRMWARES); do \
+		echo "-------------------------------------------------"; \
+		echo " Running Test: $$fw"; \
+		echo "-------------------------------------------------"; \
+		ln -sf $(FW_DIR)/$$fw $(WORK_DIR)/$$fw; \
+		cd $(WORK_DIR) && ./simv $(SIM_FLAGS) -cm_name $$fw +FW=$$fw; \
+	done
+	@echo "Regression Finished!"
+
+check: prepare
+	@$(MAKE) compile CHECK=1
 
 clean:
 	@echo "--- Cleaning Workspace ---"

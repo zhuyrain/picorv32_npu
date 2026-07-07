@@ -18,7 +18,7 @@ module npu_axi_wrapper_burst #(
     // =========================================================================
     
     // --- 写地址通道 (Write Address Channel) ---
-    input  wire [S_AXI_ID_WIDTH-1:0] s_axi_awid,     // 【暂搁置】后续处理
+    input  wire [S_AXI_ID_WIDTH-1:0] s_axi_awid, 
     input  wire [31:0]               s_axi_awaddr,
     input  wire [ 7:0]               s_axi_awlen,    // 新增：Full 突发长度
     input  wire [ 2:0]               s_axi_awsize,   // 新增：Full 突发大小
@@ -37,13 +37,13 @@ module npu_axi_wrapper_burst #(
     output wire                      s_axi_wready,
 
     // --- 写响应通道 (Write Response Channel) ---
-    output wire [S_AXI_ID_WIDTH-1:0] s_axi_bid,      // 【暂搁置】后续处理
+    output wire [S_AXI_ID_WIDTH-1:0] s_axi_bid,
     output wire [ 1:0]               s_axi_bresp,
     output wire                      s_axi_bvalid,
     input  wire                      s_axi_bready,
 
     // --- 读地址通道 (Read Address Channel) ---
-    input  wire [S_AXI_ID_WIDTH-1:0] s_axi_arid,     // 【暂搁置】后续处理
+    input  wire [S_AXI_ID_WIDTH-1:0] s_axi_arid,
     input  wire [31:0]               s_axi_araddr,
     input  wire [ 7:0]               s_axi_arlen,    // 新增：Full 突发长度
     input  wire [ 2:0]               s_axi_arsize,   // 新增：Full 突发大小
@@ -55,7 +55,7 @@ module npu_axi_wrapper_burst #(
     output wire                      s_axi_arready,
 
     // --- 读数据通道 (Read Data Channel) ---
-    output wire [S_AXI_ID_WIDTH-1:0] s_axi_rid,      // 【暂搁置】后续处理
+    output wire [S_AXI_ID_WIDTH-1:0] s_axi_rid,
     output wire [31:0]               s_axi_rdata,
     output wire [ 1:0]               s_axi_rresp,
     output wire                      s_axi_rlast,    // 新增：Full 读最后一拍标志
@@ -119,40 +119,75 @@ module npu_axi_wrapper_burst #(
 );
 
     // =========================================================
-    // [模块 1]: AXI-Lite Slave 配置寄存器映射
+    // [模块 1]: AXI-Lite Slave 配置寄存器映射 (全新重构)
     // =========================================================
+    // 保持不变：基地址与控制
     reg [31:0] reg_ctrl_status;    // 0x00: [0]start, [1]busy, [2]done
     reg [31:0] reg_act_base;       // 0x04: 输入图首地址
     reg [31:0] reg_weight_base;    // 0x08: 权重首地址
     reg [31:0] reg_bias_base;      // 0x0C: 偏置首地址
     reg [31:0] reg_out_base;       // 0x10: 结果写回首地址
-    reg [31:0] reg_cfg_img_dim;    // 0x14: [31:16] H, [15:0] W
-    reg [31:0] reg_cfg_channels;   // 0x18: [31:16] row_word_count, [15:0] weight_word_count
-    reg [31:0] reg_cfg_quant;      // 0x1C: [31:16] Shift, [15:0] Multiplier
-    reg [31:0] reg_cfg_datapath;  // 0x20: [31:22] out_stride, [21:18] lb_ic_groups_r, [17:10] sa_weight_num, [9:4] lb_line_width, [3:0] lb_ic_groups (Write)
-    reg [31:0] reg_cfg_datapath2; // 0x24: [31:24] RSV, [23:16] cfg_oc_num, [15:0] sa_col_group_en (1 bit per 4 cols)
 
+    // 逻辑分组一：外部维度与 DMA 搬运计数
+    reg [31:0] reg_cfg_img_dim;    // 0x14: [31:16] H, [15:0] W
+    reg [31:0] reg_cfg_mem_cnt;    // 0x18: [31:16] row_word_count, [15:0] weight_word_count
+
+    // 逻辑分组二：数据通路与片上缓存参数 (刚好填满 32 bit)
+    // out_stride(9) + lb_ic_groups_r(4) + sa_weight_num(8) + lb_line_width(7) + lb_ic_groups(4) = 32
+    reg [31:0] reg_cfg_datapath;   // 0x1C: 控制 Line Buffer 位宽与深度
+
+    // 逻辑分组三：阵列空间映射与滑窗边界 (共占 30 bit)
+    // oc_num(8) + col_group_en(16) + 预留(2) + skew(1) + pad(1) + kx_max(2) + ky_max(2) = 32
+    reg [31:0] reg_cfg_spatial;    // 0x20: 控制阵列输出维度、时钟门控与卷积边界
+
+    // 逻辑分组四：后处理单元 (PPU) 量化与系统级安全控制
+    reg [31:0] reg_cfg_quant;      // 0x24: [31:16] ppu_cfg_out_zp, [15:0] ppu_cfg_multiplier
+    // 0x28: [31:22] drain_timeout(10), [21:12] fifo_af_thresh(10), [11:6] RSV, [5:1] ppu_cfg_shift, [0] ppu_cfg_relu_en
+    reg [31:0] reg_cfg_post;       
+
+
+    // ==========================================
     // 内部控制信号提取
+    // ==========================================
     wire        npu_start_pulse   = reg_ctrl_status[0]; 
     reg         npu_busy;                             
     reg         npu_done_pulse;
-    assign      npu_done_level    = reg_ctrl_status[2];                            
+    assign      npu_done_level    = reg_ctrl_status[2];   
 
-    // axi-full信号处理
-    assign s_axi_rlast = s_axi_rvalid;
 
+    // ==========================================
     // 提取配置字段供内部 Datapath 和 FSM 使用
+    // ==========================================
+    // 1. 外部维度与搬运计数 (0x14, 0x18)
     wire [15:0] cfg_img_h         = reg_cfg_img_dim[31:16];
     wire [15:0] cfg_img_w         = reg_cfg_img_dim[15:0];
-    wire [15:0] row_word_count    = reg_cfg_channels[31:16];
-    wire [15:0] weight_word_count = reg_cfg_channels[15:0];
-    wire [9:0]  out_stride        = reg_cfg_datapath[31:22];
-    wire [3:0]  lb_cfg_ic_groups_r= reg_cfg_datapath[21:18]; //读取时的输入通道组数受line buffer的位宽影响
-    wire [7:0]  sa_cfg_weight_num = reg_cfg_datapath[17:10];
-    wire [5:0]  lb_cfg_line_width = reg_cfg_datapath[9:4];
-    wire [3:0]  lb_cfg_ic_groups  = reg_cfg_datapath[3:0]; //写入时必须以总线位宽写入，因此输入通道组数会更多
-    wire [7:0]  cfg_oc_num        = reg_cfg_datapath2[23:16]; //输出通道数配置信号
-    wire [15:0] sa_col_group_en   = reg_cfg_datapath2[15:0];  //门控时钟使能配置信号
+    wire [15:0] row_word_count    = reg_cfg_mem_cnt[31:16];
+    wire [15:0] weight_word_count = reg_cfg_mem_cnt[15:0];
+
+    // 2. 数据流与片上缓存参数 (0x1C)
+    wire [8:0]  out_stride        = reg_cfg_datapath[31:23];
+    wire [3:0]  lb_cfg_ic_groups_r= reg_cfg_datapath[22:19];
+    wire [7:0]  sa_cfg_weight_num = reg_cfg_datapath[18:11];
+    wire [6:0]  lb_cfg_line_width = reg_cfg_datapath[10:4];
+    wire [3:0]  lb_cfg_ic_groups  = reg_cfg_datapath[3:0];
+
+    // 3. 阵列空间映射与卷积核边界 (0x20)
+    wire [7:0]  cfg_oc_num        = reg_cfg_spatial[31:24];
+    wire [15:0] sa_col_group_en   = reg_cfg_spatial[23:8];
+    wire        cfg_kernel_ky_skew= reg_cfg_spatial[5];
+    wire        lb_cfg_pad_size   = reg_cfg_spatial[4];
+    wire [1:0]  cfg_kernel_kx_max = reg_cfg_spatial[3:2];
+    wire [1:0]  cfg_kernel_ky_max = reg_cfg_spatial[1:0];
+
+    // 4. 量化与后处理 (0x24, 0x28 的低位)
+    wire [31:0] ppu_cfg_out_zp    = {16'b0, reg_cfg_quant[31:16]}; 
+    wire [31:0] ppu_cfg_multiplier= {16'b0, reg_cfg_quant[15:0]};
+    wire [4:0]  ppu_cfg_shift     = reg_cfg_post[5:1];
+    wire        ppu_cfg_relu_en   = reg_cfg_post[0];
+
+    // 5. 系统级流水线安全控制 (0x28 的高位)
+    wire [9:0]  fifo_af_thresh    = reg_cfg_post[21:12]; // 动态 Almost Full 阈值
+    wire [9:0]  drain_timeout     = reg_cfg_post[31:22]; // 动态排空等待节拍数
 
     wire [31:0] current_status = {29'd0, reg_ctrl_status[2], npu_busy, 1'b0};
 
@@ -181,11 +216,14 @@ module npu_axi_wrapper_burst #(
             reg_weight_base  <= 32'd0;
             reg_bias_base    <= 32'd0;
             reg_out_base     <= 32'd0;
+            
+            // 使用重构后的新配置寄存器
             reg_cfg_img_dim  <= 32'd0;
-            reg_cfg_channels <= 32'd0;
-            reg_cfg_quant    <= 32'd0;
+            reg_cfg_mem_cnt  <= 32'd0;
             reg_cfg_datapath <= 32'd0;
-            reg_cfg_datapath2<= 32'd0;
+            reg_cfg_spatial  <= 32'd0;
+            reg_cfg_quant    <= 32'd0;
+            reg_cfg_post     <= 32'd0;
 
             s_aw_ready_reg   <= 1'b1;
             s_w_ready_reg    <= 1'b1;
@@ -234,15 +272,16 @@ module npu_axi_wrapper_burst #(
                         if (s_w_data_reg[0]) reg_ctrl_status[0] <= 1'b1;
                         if (s_w_data_reg[2]) reg_ctrl_status[2] <= 1'b0;
                     end
-                    6'd1: reg_act_base     <= s_w_data_reg;
-                    6'd2: reg_weight_base  <= s_w_data_reg;
-                    6'd3: reg_bias_base    <= s_w_data_reg;
-                    6'd4: reg_out_base     <= s_w_data_reg;
-                    6'd5: reg_cfg_img_dim  <= s_w_data_reg;
-                    6'd6: reg_cfg_channels <= s_w_data_reg;
-                    6'd7: reg_cfg_quant    <= s_w_data_reg;
-                    6'd8: reg_cfg_datapath <= s_w_data_reg;
-                    6'd9: reg_cfg_datapath2<= s_w_data_reg;
+                    6'd1:  reg_act_base     <= s_w_data_reg;
+                    6'd2:  reg_weight_base  <= s_w_data_reg;
+                    6'd3:  reg_bias_base    <= s_w_data_reg;
+                    6'd4:  reg_out_base     <= s_w_data_reg;
+                    6'd5:  reg_cfg_img_dim  <= s_w_data_reg;
+                    6'd6:  reg_cfg_mem_cnt  <= s_w_data_reg;
+                    6'd7:  reg_cfg_datapath <= s_w_data_reg;
+                    6'd8:  reg_cfg_spatial  <= s_w_data_reg;
+                    6'd9:  reg_cfg_quant    <= s_w_data_reg;
+                    6'd10: reg_cfg_post     <= s_w_data_reg;
                     default: ; // 忽略越界写入
                 endcase
 
@@ -276,6 +315,9 @@ module npu_axi_wrapper_burst #(
     assign s_axi_rdata   = s_r_data_reg;
     assign s_axi_rid     = s_r_id_reg;   // 新增：连续赋值给输出端口
 
+    // axi-full信号处理
+    assign s_axi_rlast = s_axi_rvalid;
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             s_ar_ready_reg <= 1'b1;
@@ -290,16 +332,17 @@ module npu_axi_wrapper_burst #(
                 s_r_id_reg <= s_axi_arid; // 🌟黄金操作：寄存当前事务的 ID
                 
                 case (s_axi_araddr[7:2])
-                    6'd0: s_r_data_reg <= current_status; 
-                    6'd1: s_r_data_reg <= reg_act_base;
-                    6'd2: s_r_data_reg <= reg_weight_base;
-                    6'd3: s_r_data_reg <= reg_bias_base;
-                    6'd4: s_r_data_reg <= reg_out_base;
-                    6'd5: s_r_data_reg <= reg_cfg_img_dim;
-                    6'd6: s_r_data_reg <= reg_cfg_channels;
-                    6'd7: s_r_data_reg <= reg_cfg_quant;
-                    6'd8: s_r_data_reg <= reg_cfg_datapath;
-                    6'd9: s_r_data_reg <= reg_cfg_datapath2; // 修复
+                    6'd0:  s_r_data_reg <= current_status; 
+                    6'd1:  s_r_data_reg <= reg_act_base;
+                    6'd2:  s_r_data_reg <= reg_weight_base;
+                    6'd3:  s_r_data_reg <= reg_bias_base;
+                    6'd4:  s_r_data_reg <= reg_out_base;
+                    6'd5:  s_r_data_reg <= reg_cfg_img_dim;
+                    6'd6:  s_r_data_reg <= reg_cfg_mem_cnt;
+                    6'd7:  s_r_data_reg <= reg_cfg_datapath;
+                    6'd8:  s_r_data_reg <= reg_cfg_spatial;
+                    6'd9:  s_r_data_reg <= reg_cfg_quant;
+                    6'd10: s_r_data_reg <= reg_cfg_post;
                     default: s_r_data_reg <= 32'hDEADBEEF; 
                 endcase
                 
@@ -321,6 +364,7 @@ module npu_axi_wrapper_burst #(
     reg         lb_shift_line_en, lb_pixel_wr_en;
     reg  [5:0]  lb_window_base_x;
     reg  [1:0]  lb_kernel_kx, lb_kernel_ky;
+    wire [1:0]  lb_kernel_ky_skew = lb_kernel_ky + cfg_kernel_ky_skew;
     reg  [3:0]  lb_read_ic_group;
     
     // 【参数化】：Line Buffer 吐出的 1D 列向量宽 = 行数 * 8-bit
@@ -361,13 +405,13 @@ module npu_axi_wrapper_burst #(
     wire write_fsm_idle = (wr_state == 2'd0);
 
     npu_line_buffer #(
-        .MAX_LINE_WIDTH(34), 
-        .PAD_SIZE(1), 
+        .MAX_LINE_WIDTH(64), 
         .MAX_IC_GROUPS(16),     // 若未来扩充更大图像，此参数也可适当放大
         .DATA_WIDTH(SYS_ROWS * 8) // 【核心修改】：自动匹配物理行宽
     ) u_lb (
         .clk              (clk),
         .rst_n            (rst_n),
+        .cfg_pad_size     (lb_cfg_pad_size),
         .cfg_line_width   (lb_cfg_line_width),
         .cfg_ic_groups    (lb_cfg_ic_groups),
         .shift_line_en    (lb_shift_line_en),
@@ -375,7 +419,7 @@ module npu_axi_wrapper_burst #(
         .pixel_wr_data    (lb_pixel_wr_data_reg), // 直接吃 AXI 读回的 32-bit 数据
         .window_base_x    (lb_window_base_x),
         .kernel_kx        (lb_kernel_kx),
-        .kernel_ky        (lb_kernel_ky),
+        .kernel_ky        (lb_kernel_ky_skew),
         .read_ic_group    (lb_read_ic_group),
         .window_pixel_out (lb_window_pixel_out)
     );
@@ -386,7 +430,6 @@ module npu_axi_wrapper_burst #(
     ) u_skew (
         .clk                  (clk),
         .rst_n                (rst_n),
-        .pad_en               (1'b0),
         .act_in_flat          (lb_window_pixel_out),
         .act_valid_in         (act_valid_in),
         .act_out_skewed       (act_out_skewed),
@@ -401,6 +444,7 @@ module npu_axi_wrapper_burst #(
         .clk              (clk),
         .rst_n            (rst_n),
         .npu_busy         (npu_busy),
+        .npu_start_pulse  (npu_start_pulse),
         .col_group_en     (sa_col_group_en),
         .cfg_weight_num   (sa_cfg_weight_num),
         .weight_en        (sa_weight_en),
@@ -435,10 +479,10 @@ module npu_axi_wrapper_burst #(
     ) u_ppu (
         .clk            (clk),
         .rst_n          (rst_n),
-        .cfg_multiplier ({16'b0,reg_cfg_quant[15:0]}),
-        .cfg_shift      (reg_cfg_quant[20:16]),
-        .cfg_out_zp     (32'd0),
-        .cfg_relu_en    (1'b1), // relu使能 可能也需要参数化
+        .cfg_multiplier (ppu_cfg_multiplier),
+        .cfg_shift      (ppu_cfg_shift),
+        .cfg_out_zp     (ppu_cfg_out_zp),
+        .cfg_relu_en    (ppu_cfg_relu_en), // relu使能
         .valid_in       (ppu_valid_trigger),
         .acc_in         (final_acc_out),
         .valid_out      (ppu_valid_out),
@@ -466,11 +510,11 @@ module npu_axi_wrapper_burst #(
 
     npu_sync_fifo #(
         .DATA_WIDTH(SYS_COLS * 8), // 自动计算！(4x4=32bit, 32x32=256bit)
-        .ADDR_WIDTH(6), 
-        .ALMOST_FULL_THRESH(32)
+        .ADDR_WIDTH(10)
     ) u_out_fifo (
         .clk        (clk),
         .rst_n      (rst_n),
+        .almost_full_thresh(fifo_af_thresh),
         .wr_en      (deskewed_valid_out), 
         .wr_data    (deskewed_data_out),
         .rd_en      (m_axi_wvalid && m_axi_wready && m_axi_wlast && (wr_words_left == 16'd0)), // 【见下文提示】
@@ -520,6 +564,7 @@ module npu_axi_wrapper_burst #(
     localparam S_COMPUTE         = 4'd6;
     localparam S_UPDATE_WINDOW   = 4'd7;
     localparam S_WAIT_ALL_DONE   = 4'd8;
+    localparam S_SHIFT_SYNC      = 4'd9;
     
 
     reg [3:0] state;
@@ -644,7 +689,8 @@ module npu_axi_wrapper_burst #(
 
             ar_done <= 1'b0;
             // w_done  <= 1'b0;
-
+            bias_ptr        <= 32'd0;
+            weight_ptr      <= 32'd0;
             act_valid_in     <= 1'b0;
             sa_weight_en     <= 1'b0;
             weight_row_group_cnt <= 4'd0;
@@ -653,6 +699,7 @@ module npu_axi_wrapper_burst #(
             acc_preload_bias <= 1'b0;
 
             // 坐标寄存器复位
+            lb_window_base_x <= 6'd0;
             lb_kernel_kx     <= 2'd0;
             lb_kernel_ky     <= 2'd0;
             lb_read_ic_group <= 4'd0;
@@ -710,7 +757,7 @@ module npu_axi_wrapper_burst #(
                         pixel_cnt        <= 16'd0;
                         ig_cnt           <= 3'd0;
                         // weight_cycle_cnt 可以彻底删除了，因为有了 weight_words_left
-
+                        lb_window_base_x <= 6'd0;
                         lb_kernel_kx     <= 2'd0;
                         lb_kernel_ky     <= 2'd0;
                         lb_read_ic_group <= 4'd0;
@@ -853,18 +900,31 @@ module npu_axi_wrapper_burst #(
                             lb_shift_line_en <= 1'b1; // 新行滚入 lb_2, 旧行去 lb_1
                             
                             // 只要还没到最后，立刻扣扳机！让 AXI 在后台重叠读下一行！
-                            if (oy < cfg_img_h - 2) begin
+                            if ((oy < cfg_img_h - 2) && (cfg_img_h != 1)) begin
                                 req_load_row <= ~req_load_row;
                             end
 
-                            if (!fifo_almost_full) begin
-                                act_valid_in <= 1'b1;
-                                state        <= S_COMPUTE;
-                            end else begin
-                                act_valid_in <= 1'b0;
-                                state        <= S_WAIT_FIFO;
-                            end
+                            // 【终极修复】：绝不能直接跳 S_COMPUTE！必须等一拍让 Line Buffer 更新生效！
+                            state <= S_SHIFT_SYNC;
                         end
+                    end
+                end
+
+                // ==========================================
+                // 【新增状态】：等待移位寄存器物理生效的 1 拍缓冲
+                // ==========================================
+                S_SHIFT_SYNC: begin
+                    // 此时前一个状态赋予的 lb_shift_line_en 正处于高电平，
+                    // 在本周期的末尾，Line Buffer 才会真正把新行数据吐出来！
+                    // 所以现在必须赶紧把使能拉低，并准备发放数据有效令牌
+                    lb_shift_line_en <= 1'b0; 
+
+                    if (!fifo_almost_full) begin
+                        act_valid_in <= 1'b1;
+                        state        <= S_COMPUTE;
+                    end else begin
+                        act_valid_in <= 1'b0;
+                        state        <= S_WAIT_FIFO;
                     end
                 end
 
@@ -885,22 +945,55 @@ module npu_axi_wrapper_burst #(
                 end
 
                 S_COMPUTE: begin
-                    lb_shift_line_en <= 1'b0; // 【终极修复】：确保滚动只发生一拍！
-                    
+                    lb_shift_line_en <= 1'b0; 
                     // 【神级重构】：极其优雅的三维嵌套进位计数器！(Look-ahead)
                     // X 维最快，Y 维居中，通道组维最慢
-                    if (lb_kernel_kx == 2'd2) begin
+                    if (lb_kernel_kx == cfg_kernel_kx_max) begin
                         lb_kernel_kx <= 2'd0;
-                        if (lb_kernel_ky == 2'd2) begin
+                        if (lb_kernel_ky == cfg_kernel_ky_max) begin
                             lb_kernel_ky <= 2'd0;
                             if (lb_read_ic_group == lb_cfg_ic_groups_r) begin
-                                // 三层循环全部结束！进入排空态
+                                // =======================================================
+                                // 🌟 核心融合区 (Zero-Bubble Look-ahead)
+                                // 三层循环结束，直接在当前拍前瞻下一个坐标！
+                                // =======================================================
                                 lb_read_ic_group <= 4'd0;
-                                // 【核心修复 2】：为下一拍提前撤销令牌！
-                                act_valid_in <= 1'b0; 
                                 
-                                // 【神级跳转】：再也不等了！直接去更新坐标！
-                                state <= S_UPDATE_WINDOW;
+                                // 判断是否到了行末 (需要物理换行)
+                                if (ox == cfg_img_w - 1) begin
+                                    // 发生换行，这必须打断流水线 (存在气泡不可避免，但对于 FC 没影响，因为 FC 高度 H=1)
+                                    ox <= 0; 
+                                    oy <= oy + 1;
+                                    act_valid_in <= 1'b0; // 撤销令牌，准备换行
+                                    
+                                    if (oy == cfg_img_h - 1) begin
+                                        drain_cnt <= 0;
+                                        state <= S_WAIT_ALL_DONE; 
+                                    end else begin
+                                        // 传统的换行等待逻辑 (去等 SRAM 数据)
+                                        // lb_window_base_x <= 6'd0;
+                                        // 这里直接跳跃到原来的换行校验逻辑
+                                        // 为了代码清晰，可以在下面保留一个专门处理换行的 S_HANDLE_NEW_ROW 状态，
+                                        // 或者直接用原来的 S_UPDATE_WINDOW 来处理换行。
+                                        state <= S_UPDATE_WINDOW; 
+                                    end
+                                end 
+                                // 🚀 无缝同行跳跃！(解决 FC 累加对齐的杀手锏)
+                                else begin
+                                    ox <= ox + 1;
+                                    // 提前计算好下一拍的基地址
+                                    lb_window_base_x <= ox[5:0] + 1; 
+
+                                    // 绝对不拉低 act_valid_in！保持全速狂飙！
+                                    if (!fifo_almost_full) begin
+                                        act_valid_in <= 1'b1;
+                                        state <= S_COMPUTE; // 死循环在当前状态，气泡被彻底抹杀！
+                                    end else begin
+                                        act_valid_in <= 1'b0; // 只有 FIFO 真没数据了才被迫停下
+                                        state <= S_WAIT_FIFO;
+                                    end
+                                end
+
                             end else begin
                                 lb_read_ic_group <= lb_read_ic_group + 4'd1;
                             end
@@ -927,73 +1020,37 @@ module npu_axi_wrapper_burst #(
                 end
 
                 // ==========================================
-                // 滑窗更新态：包含 Fast-Path 跳跃逻辑
+                // 滑窗更新态：只负责处理“物理换行”时的跨行等待
                 // ==========================================
                 S_UPDATE_WINDOW: begin
-                    if (ox == cfg_img_w - 1) begin
-                        ox <= 0; oy <= oy + 1;
-                        if (oy == cfg_img_h - 1) begin
-                            // 全图的前端送入已经结束！
-                            // 但是！阵列肚子里还有数据没流完，FIFO 里还有数据没写完！
-                            // 所以进入收尾等待态
-                            // 【核心修复】：为排空态准备计数器！
-                            drain_cnt <= 0;
-                            state <= S_WAIT_ALL_DONE; 
-                        end else begin
-                            lb_window_base_x <= 6'd0;
-                            lb_kernel_kx     <= 2'd0;
-                            lb_kernel_ky     <= 2'd0;
-                            lb_read_ic_group <= 4'd0; // 因为你改成了4位，这里是4'd0，很棒
-                            
-                            // 刚算完倒数第二行，准备算最后一行 (Pad)
-                            if (oy == cfg_img_h - 2) begin
-                                lb_shift_line_en <= 1'b1; // 绝对安全的 Shift，垫入底部 Pad 0
-                                
-                                if (!fifo_almost_full) begin
-                                    act_valid_in <= 1'b1;
-                                    state <= S_COMPUTE;
-                                end else begin
-                                    state <= S_WAIT_FIFO;
-                                end
-                            end 
-                            // 【Fast-Path 优化 2】：后台数据早已就绪！
-                            else if (req_load_row == ack_load_row) begin
-                                lb_shift_line_en <= 1'b1; // 安全 Shift！数据进入工作区
-                                
-                                // 【核心修复】：千万别忘了扣扳机让小弟去读下下行！
-                                // 【极致降维优化】：因为 H-1 和 H-2 已经被拦截
-                                // 此时 oy 最大只能是 H-3。当它是 H-3 时不再预取 Row(H)，因为图像到底了！
-                                if (oy != cfg_img_h - 3) begin
-                                    req_load_row <= ~req_load_row;
-                                end
-                                
-                                if (!fifo_almost_full) begin
-                                    act_valid_in <= 1'b1;
-                                    state <= S_COMPUTE;
-                                end else begin
-                                    state <= S_WAIT_FIFO;
-                                end
-                            end 
-                            // 【Slow-Path】：总线太卡，被迫等待
-                            else begin
-                                state <= S_WAIT_ROW; 
-                            end
-                        end
-                    end else begin
-                        ox <= ox + 1;
-                        lb_window_base_x <= ox[5:0] + 1;
-
-                        lb_kernel_kx     <= 2'd0;
-                        lb_kernel_ky     <= 2'd0;
-                        lb_read_ic_group <= 4'd0;
+                    lb_window_base_x <= 6'd0;
+                    lb_kernel_kx     <= 2'd0;
+                    lb_kernel_ky     <= 2'd0;
+                    lb_read_ic_group <= 4'd0; 
+                    
+                    // oy 已经在 S_COMPUTE 中完成了 +1
+                    // 此时这里的 oy 是更新后的最新值！
+                    
+                    // 刚算完倒数第二行，准备算最后一行 (Pad)
+                    if (oy == cfg_img_h - 1) begin 
+                        lb_shift_line_en <= 1'b1; 
                         
-                        // 行内移动，不涉及换行，继续算！
-                        if (!fifo_almost_full) begin
-                            act_valid_in <= 1'b1;
-                            state <= S_COMPUTE;
-                        end else begin
-                            state <= S_WAIT_FIFO;
+                        // 同样必须走 Sync 缓冲拍！
+                        state <= S_SHIFT_SYNC;
+                    end 
+                    // 【Fast-Path 优化】：后台数据早已就绪！
+                    else if (req_load_row == ack_load_row) begin
+                        lb_shift_line_en <= 1'b1; 
+                        
+                        if (oy != cfg_img_h - 2) begin 
+                            req_load_row <= ~req_load_row;
                         end
+                        
+                        // 必须走 Sync 缓冲拍！
+                        state <= S_SHIFT_SYNC;
+                    end 
+                    else begin
+                        state <= S_WAIT_ROW; 
                     end
                 end
 
@@ -1002,7 +1059,7 @@ module npu_axi_wrapper_burst #(
                     // 保险起见，我们强制等 20 拍，确保子弹全都飞进 FIFO
                     // 一次端到端计算只会触发一次，代价完全可以接受
                     // 保证计算的结果都流入FIFO
-                    if (drain_cnt < 20) begin
+                    if (drain_cnt < drain_timeout) begin
                         drain_cnt <= drain_cnt + 1;
                     end
                     // 只有子弹都进 FIFO 了，再去监控 FIFO 的写回情况
@@ -1149,7 +1206,7 @@ module npu_axi_wrapper_burst #(
                                 // 整个超级像素全部写完！
                                 // 【核心物理补偿】：补偿本像素内累加的偏移，加上 out_stride 跳向下个像素的起点！
                                 // 因为涉及到多轮NPU启动计算一次CONV，所以out_stride并不等于cfg_oc_num
-                                out_ptr  <= out_ptr + {22'd0, out_stride} - {24'd0, cfg_oc_num};
+                                out_ptr  <= out_ptr + {23'd0, out_stride} - {24'd0, cfg_oc_num};
                                 if(fifo_empty) begin
                                     wr_state <= 2'd0; // 回去等下一个像素
                                 end else begin
@@ -1162,10 +1219,6 @@ module npu_axi_wrapper_burst #(
                                 wr_state <= 2'd1;
                             end
                         end
-                    end
-
-                    default: begin
-                        wr_state <= 2'd0;
                     end
                 endcase
             end
