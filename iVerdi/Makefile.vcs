@@ -48,7 +48,7 @@ SRC_FILES = $(SRC_FILES_$(CASE))
 TB_TOP    = $(TB_TOP_$(CASE))
 FSDB_NAME = $(FSDB_NAME_$(CASE))
 
-# 防呆设计
+# 参数合法性校验
 ifeq ($(strip $(SRC_FILES)),)
 $(error "错误: 未知的仿真用例 CASE=$(CASE)！请指定 1~4")
 endif

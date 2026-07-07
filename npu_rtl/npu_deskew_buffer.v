@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-// 反偏斜缓存：将梯次到达的 N 列 8-bit 数据，在同一拍完美对齐为 (N*8)-bit 输出
+// 反偏斜缓存：将脉动阵列各列因流水线延迟产生的时间偏差对齐，合成为同步宽字输出
 module npu_deskew_buffer #(
     parameter COLS = 4,
     parameter DATA_WIDTH = 8

@@ -84,7 +84,7 @@ module npu_line_buffer #(
             end 
             else if (pixel_wr_en) begin
                 if (wr_ptr < cfg_line_width - {6'b0,cfg_pad_size}) begin
-                    // 【魔法打包】：根据 wr_ig_cnt 把 32-bit 放进lb_3的对应槽位！
+                    // 将 32-bit AXI 数据按 IC 组号写入 lb_3 的对应槽位
                     lb_3[wr_ptr][wr_ig_cnt * 32 +: 32] <= pixel_wr_data;
                     // 分组计数器与 X 坐标递增逻辑
                     if (wr_ig_cnt == cfg_ic_groups) begin

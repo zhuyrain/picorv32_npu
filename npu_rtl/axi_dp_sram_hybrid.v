@@ -104,7 +104,7 @@ module axi_dp_sram_hybrid #(
 `endif
 
     initial begin
-        // Vivado 综合器可以完美识别并吸收这个过程到 BRAM 的 INIT 字段中
+        // Vivado 综合器可将此初始化过程吸收为 BRAM INIT 属性
     `ifndef FPGA
         #50; // 仿真为了避开 X 态需要一点延迟，综合时会被 Vivado 自动忽略
         if ($value$plusargs("FW=%s", fw_name)) begin
@@ -454,7 +454,7 @@ module axi_dp_sram_hybrid #(
 
 `ifdef FPGA
     // =========================================================================
-    // 【终极 BRAM 映射魔法】：提取纯净的物理 RAM 控制信号
+    // 提取纯净的物理 RAM 控制信号以辅助综合器推断 BRAM
     // =========================================================================
     wire        bram_we;
     wire [29:0] bram_waddr;

@@ -243,11 +243,11 @@ module tb_picorv32 (
     // --- Master 0 (CPU) 写数据通道 (W) 补齐 ---
     wire        cpu_wlast;
     
-    // 神来之笔：因为 AWLEN 为 0（只传1拍），所以 CPU 每次发出数据的同时，必然也是最后一拍！
+    // AWLEN = 0 implies single-beat burst, so WLAST is always asserted
     assign cpu_wlast   = 1'b1;      
 
     // --- Master 0 (CPU) 写响应通道 (B) 接收 ---
-    // 这些是从 Interconnect 输出给 CPU 的，但 CPU 根本不看，所以只声明线网作为“垃圾桶”即可
+    // PicoRV32 CPU 不使用 BID/BRESP/RID/RRESP 信号，此处仅为端口兼容性声明
     wire [3:0]  cpu_bid;
 
     // --- Master 0 (CPU) 读地址通道 (AR) 补齐 ---
@@ -335,7 +335,7 @@ module tb_picorv32 (
 
     // --- 互联矩阵 M2 端口 写响应通道 (B) 补齐输入 (防写死锁) ---
     wire [3:0]  m2_axi_bid;
-    // 神来之笔：AXI-Lite 从机不会返回 ID，为了互联矩阵不卡死，我们将 AWID 静态环回给 BID
+    // AXI-Lite UART 从机不驱动 BID，将 AWID 环回至 BID 以防互联矩阵死锁
     assign m2_axi_bid = m2_axi_awid;
 
     // --- 互联矩阵 M2 端口 读地址通道 (AR) 悬空输出 ---
@@ -378,7 +378,7 @@ module tb_picorv32 (
     assign m2_axi_rvalid    = uart_axi_rvalid;  // UART 的有效信号传给 CPU
     assign uart_axi_rready  = m2_axi_rready;
 `else
-    // 【仿真模式】：绝对抗乱序与抗 GCC 优化的终极 UART 嗅探器 (Bullet-proof Dummy UART)
+    // 仿真专用 UART 行为模型
     reg [31:0] snoop_awaddr;
     reg [31:0] snoop_wdata;
     reg [3:0]  snoop_wstrb;
@@ -415,7 +415,7 @@ module tb_picorv32 (
                 snoop_w_latched <= 1'b1;
             end
 
-            // 3. 完美会师与执行
+            // 3. AW/W 握手汇合：执行 UART 写入操作并发出 B 响应
             if ((snoop_aw_latched || (m2_axi_awvalid && m2_axi_awready)) &&
                 (snoop_w_latched  || (m2_axi_wvalid  && m2_axi_wready)) &&
                 !uart_bvalid_reg) begin
