@@ -510,7 +510,7 @@ module npu_axi_wrapper_burst #(
 
     npu_sync_fifo #(
         .DATA_WIDTH(SYS_COLS * 8), // 自动计算！(4x4=32bit, 32x32=256bit)
-        .ADDR_WIDTH(9)
+        .ADDR_WIDTH(10)
     ) u_out_fifo (
         .clk        (clk),
         .rst_n      (rst_n),

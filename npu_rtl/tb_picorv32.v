@@ -48,7 +48,7 @@ module tb_picorv32 (
     // =========================================================================
     initial begin
         clk = 0;
-        forever #5 clk = ~clk; 
+        forever #2.5 clk = ~clk; 
     end
 
     initial begin

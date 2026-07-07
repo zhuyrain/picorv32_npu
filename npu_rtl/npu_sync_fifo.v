@@ -73,6 +73,6 @@ module npu_sync_fifo #(
     wire [ADDR_WIDTH:0] data_count = wr_ptr - rd_ptr;
     
     // 只要达到或超过阈值，拉高 almost_full！
-    assign almost_full = (data_count >= almost_full_thresh[ADDR_WIDTH:0]);
+    assign almost_full = (data_count >= almost_full_thresh);
 
 endmodule
