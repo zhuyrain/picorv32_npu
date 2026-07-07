@@ -9,7 +9,7 @@
 -**GCC编译器**：无需，hex固件由CNN-CIFAR-10代码仓自动生成后复制到本代码仓的iVerdi/regress/firmwares/目录下即可
 
 ### 单次仿真
-
+默认固件位于iVerdi/firmware.hex
 ```bash
 cd iVerdi
 

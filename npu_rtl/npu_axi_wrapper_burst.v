@@ -680,6 +680,9 @@ module npu_axi_wrapper_burst #(
         (current_words_left > 16'd256) ? 16'd256 : current_words_left;
 
     // 3. 最终突发长度：同时满足 256-beat 上限、4KB 边界对齐、剩余 word 数量三项约束
+    wire [15:0] safe_burst_words =
+        (safe_burst_cap_words > words_to_4kb_boundary) ?
+            words_to_4kb_boundary : safe_burst_cap_words;
 
     // 4. AXI AxLEN = beats - 1
     wire [7:0] safe_arlen = safe_burst_words[7:0] - 8'd1;
@@ -732,11 +735,11 @@ module npu_axi_wrapper_burst #(
                 S_IDLE: begin
                     npu_busy <= 1'b0;
 
-            ar_done <= 1'b0;
+                    ar_done <= 1'b0;
 
-            first_row_loaded <= 1'b0;
-            lb_shift_line_en <= 1'b0;
-            bus_owner_is_pf  <= 1'b0; // 复位后由主通道占有 AR 总线
+                    first_row_loaded <= 1'b0;
+                    lb_shift_line_en <= 1'b0;
+                    bus_owner_is_pf  <= 1'b0; // 初始化时，权柄在 Master 手里
                     act_valid_in     <= 1'b0;
                     sa_weight_en     <= 1'b0;
                     acc_preload_bias <= 1'b0;
@@ -795,6 +798,7 @@ module npu_axi_wrapper_burst #(
 
                     // 2. 连续接收 R beat (数组寻址法)
                     else if (ar_done) begin
+                        if (m_axi_rvalid && master_rready) begin
                             // 【参数化升级】：写进 bias 缓冲区
                             sa_bias_buffer[pack_cnt] <= m_axi_rdata;
                             pack_cnt <= pack_cnt + 1; // 寻址步进
