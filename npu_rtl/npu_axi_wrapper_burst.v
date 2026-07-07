@@ -441,7 +441,6 @@ module npu_axi_wrapper_burst #(
         .act_valid_out_skewed (act_valid_out_skewed)
     );
 
-    // 【核心修改】：将原先的 sa_4_4 替换为你编写的通用参数化阵列名 (如 sa_array)
     sa #(
         .ROWS(SYS_ROWS),
         .COLS(SYS_COLS)
