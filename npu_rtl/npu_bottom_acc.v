@@ -35,7 +35,7 @@ module npu_bottom_acc #(
     // 累加器当前的值 (4 * 32-bit = 128-bit)，供后续 PPU/ReLU 模块读取
     output wire [COLS*PSUM_WIDTH-1:0]        acc_out,
     
-    // 【新增】送给 PPU 的发令枪！每一列各自独立触发 1 拍！
+    // 每列独立的 valid_out 触发信号，在 MAC 窗口完成时产生一拍脉冲送往 PPU
     output reg  [COLS-1:0]                   acc_valid_out
 );
 
@@ -65,7 +65,7 @@ module npu_bottom_acc #(
                 end 
                 else if (bottom_valid_in[i]) begin
                     // ===================================================
-                    // 核心魔法 1：自动偏置装填 (Auto-Bias-Load)
+                    // 自动偏置装填：每个 MAC 窗口的首拍将 bias 与 psum 相加
                     // ===================================================
                     if (mac_cnt[i] == 8'd0) begin
                         // 如果是新窗口的第一拍，直接以 bias 为底座加上 Psum！
@@ -77,15 +77,12 @@ module npu_bottom_acc #(
                         acc_bank[i] <= acc_bank[i] + bottom_psum_in[(i*PSUM_WIDTH) +: PSUM_WIDTH];
                     end
                     
-                    // ===================================================
-                    // 核心魔法 2：本地计数器与 PPU 发令枪
-                    // ===================================================
+                    // MAC 窗口完成：向 PPU 发出 valid_out 脉冲，计数器归零为下一轮窗口准备
                     if (mac_cnt[i] == cfg_window_size - 1) begin
-                        // 加满指定的次数了！通知后方的 PPU 来取数据！
                         acc_valid_out[i] <= 1'b1;
-                        mac_cnt[i]       <= 8'd0; // 自动清零，下一拍完美衔接 Auto-Bias！
+                        mac_cnt[i]       <= 8'd0; // Reset counter; bias auto-injected on next mac_cnt==0 cycle
                     end else begin
-                        // 还没加完，PPU 保持安静
+                        // Window not yet complete, keep PPU quiet
                         acc_valid_out[i] <= 1'b0;
                         mac_cnt[i]       <= mac_cnt[i] + 8'd1;
                     end

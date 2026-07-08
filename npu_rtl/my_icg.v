@@ -4,7 +4,7 @@ module my_icg (
     output wire clk_out
 );
     reg latch_en;
-    // 必须在时钟低电平时锁存 enable 信号，完美过滤毛刺
+    // 必须在时钟低电平时锁存 enable 信号，过滤毛刺
     always @(clk_in or enable) begin
         if (!clk_in) begin
             latch_en <= enable;

@@ -104,7 +104,7 @@ module sa #(
     generate
         for (r = 0; r < ROWS; r = r + 1) begin : ROW
             
-            // 【核心降维】：计算当前行所在的权重分组 (0, 1, 2...)
+            // 计算当前物理行所属的权重分组 (MY_WEIGHT_GROUP = r / 4)
             // 整数除法，向下取整：0~3->0, 4~7->1, 8~11->2
             localparam MY_WEIGHT_GROUP = r / 4; 
             
@@ -156,12 +156,16 @@ module sa #(
                 end
 
                 // ----------------------------------------------------
-                // C. 完美例化 PE
+                // C. 例化 PE
                 // ----------------------------------------------------
                 pe #(
-                    // 现在的 PE 在Conv层计算只需要存属于自己的 9 个权重！
+                    // 现在的 PE 在Conv层计算只需要存属于自己的权重！
                     // 但是最后的全连接层需要存储64个权重
+                `ifdef FPGA
+                    .MAX_WEIGHTS    (36),
+                `else
                     .MAX_WEIGHTS    (64),
+                `endif
                     // 将计算好的本行专属 Group 号作为参数传入 PE
                     .MY_GROUP       (MY_WEIGHT_GROUP) 
                 ) u_pe (

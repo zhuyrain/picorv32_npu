@@ -36,7 +36,6 @@ SRC_FILES_1 = $(PROJ_ROOT)/picorv32.v \
               $(SRC_ROOT_NPU)/npu_sync_fifo.v \
               $(SRC_ROOT_NPU)/npu_line_buffer.v \
               $(SRC_ROOT_NPU)/npu_axi_wrapper_burst.v \
-              $(SRC_ROOT_NPU)/axi_sram.v \
               $(SRC_ROOT_NPU)/axi_interconnect.v \
               $(SRC_ROOT_NPU)/arbiter.v \
               $(SRC_ROOT_NPU)/priority_encoder.v \
@@ -49,7 +48,7 @@ SRC_FILES = $(SRC_FILES_$(CASE))
 TB_TOP    = $(TB_TOP_$(CASE))
 FSDB_NAME = $(FSDB_NAME_$(CASE))
 
-# 防呆设计
+# 参数合法性校验
 ifeq ($(strip $(SRC_FILES)),)
 $(error "错误: 未知的仿真用例 CASE=$(CASE)！请指定 1~4")
 endif
@@ -57,7 +56,7 @@ endif
 # ----------------------------------------------------------------------------
 # 3. 固件回归列表 (Firmware Regression List)
 # ----------------------------------------------------------------------------
-# 在这里填入你所有的测试固件名字 (会自动去 FW_DIR 目录下寻找它们)
+# 所有的测试固件名字 (脚本会自动去 FW_DIR 目录下寻找)
 FIRMWARES = firmware_byte_cpu_alu.hex \
             firmware_byte_axi_cfg.hex \
             firmware_byte_axi_burst_edge.hex \
@@ -95,7 +94,7 @@ SIM_FLAGS += +fsdbfile+$(FSDB_NAME)
 SIM_FLAGS += -no_save
 
 # ============================================================================
-# 【核心隔离】：仅当 COV=1 时，才注入沉重的覆盖率收集 Flag！
+# 【核心隔离】：仅当 COV=1 时，才注入覆盖率收集 Flag
 # ============================================================================
 ifeq ($(COV), 1)
 VCS_FLAGS += -cm line+tgl+cond+fsm+branch
@@ -123,7 +122,7 @@ compile: prepare
 	@echo "================================================="
 	cd $(WORK_DIR) && vcs $(VCS_FLAGS) $(SRC_FILES)
 
-# 单次仿真 (默认寻找工程根目录下的 firmware.hex 进行单次极速调试，不开启覆盖率)
+# 单次仿真 (默认寻找工程根目录下的 firmware.hex 进行单次调试，不开启覆盖率)
 sim:
 	@echo "================================================="
 	@echo "  [2/3] Running Single Simulation & Dumping FSDB"
@@ -141,7 +140,7 @@ wave:
 # ============================================================================
 # 自动化回归与覆盖率合并 (make regress)
 # ============================================================================
-# 注意：regress 不再直接依赖 compile，而是利用嵌套 make 强制开启 COV=1 重新编译
+# regress 利用嵌套 make 强制开启 COV=1 重新编译
 regress:
 	@echo "================================================="
 	@echo "  Re-compiling RTL with Coverage Instrumentation"

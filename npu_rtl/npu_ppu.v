@@ -75,7 +75,7 @@ module npu_ppu #(
             // 算术右移 (Arithmetic Shift Right)，保留符号位
             assign shifted_val[c] = mult_s1[c] >>> cfg_shift;
             
-            // 降维回 32-bit，并加上 Zero Point
+            // 截取低 32-bit，加上输出零点偏移
             assign requantized[c] = shifted_val[c][31:0] + cfg_out_zp;
 
             // 组合逻辑：饱和截断器 (Saturation Clipper)
