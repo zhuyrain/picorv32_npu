@@ -147,9 +147,10 @@ module pe #(
                     rd_weight_idx <= rd_weight_idx + 8'd1;
             end
             
-            // --- 5. 永不停止的 Psum 瀑布 ---
-            // 重点：无论当前是在配权重，还是在计算，亦或是发呆，
-            // psum_out 永远在运转！这保证了独立数据线在时间上的完美正交重叠！
+            // --- 5. Psum 持续流 ---
+            // psum_out 在每个周期持续更新，不受 weight/act 有效性影响。
+            // 组合逻辑 add_res (psum_in + act*weight) 流式传递，
+            // 无效输入通过 gated act_valid_in 和 current_weight 机制产生零值。
             psum_out <= $unsigned(add_res);
             
         end

@@ -86,7 +86,7 @@ module npu_axi_wrapper_burst #(
     input  wire [31:0]  m_axi_rdata,
     input  wire [ 1:0]  m_axi_rresp,
     input  wire         m_axi_rlast,
-    // --- 新增 R 边带信号 (作为垃圾桶接收) ---
+    // --- R 边带信号 (NPU 内部不使用，由互联矩阵处理) ---
     input  wire [ 3:0]  m_axi_rid,
 
     // Write address channel
@@ -114,7 +114,7 @@ module npu_axi_wrapper_burst #(
     input  wire         m_axi_bvalid,
     output reg          m_axi_bready,
     input  wire [ 1:0]  m_axi_bresp,
-    // --- 新增 B 边带信号 (作为垃圾桶接收) ---
+    // --- B 边带信号 (NPU 内部不使用，由互联矩阵处理) ---
     input  wire [ 3:0]  m_axi_bid
 );
 
@@ -262,7 +262,7 @@ module npu_axi_wrapper_burst #(
                 s_w_ready_reg <= 1'b0; // 阻止新请求
             end
 
-            // 3. 完美会师：执行寄存器写入并发出 B 响应
+            // 3. 写地址/写数据握手汇合：执行寄存器写入，发出 B 响应
             if (s_aw_latched && s_w_latched && !s_b_valid_reg) begin
                 
                 // 【注意】：此处必须使用锁存后的 s_aw_addr_reg 进行译码
@@ -404,9 +404,14 @@ module npu_axi_wrapper_burst #(
     // 提供给主状态机的标志位
     wire write_fsm_idle = (wr_state == 2'd0);
 
-    npu_line_buffer #(
+    npu_line_buffer #( 
+    `ifdef FPGA
+        .MAX_LINE_WIDTH(34), 
+        .MAX_IC_GROUPS(4),
+    `else
         .MAX_LINE_WIDTH(64), 
-        .MAX_IC_GROUPS(16),     // 若未来扩充更大图像，此参数也可适当放大
+        .MAX_IC_GROUPS(16),
+    `endif
         .DATA_WIDTH(SYS_ROWS * 8) // 【核心修改】：自动匹配物理行宽
     ) u_lb (
         .clk              (clk),
@@ -436,7 +441,6 @@ module npu_axi_wrapper_burst #(
         .act_valid_out_skewed (act_valid_out_skewed)
     );
 
-    // 【核心修改】：将原先的 sa_4_4 替换为你编写的通用参数化阵列名 (如 sa_array)
     sa #(
         .ROWS(SYS_ROWS),
         .COLS(SYS_COLS)
@@ -510,7 +514,11 @@ module npu_axi_wrapper_burst #(
 
     npu_sync_fifo #(
         .DATA_WIDTH(SYS_COLS * 8), // 自动计算！(4x4=32bit, 32x32=256bit)
+    `ifdef FPGA
+        .ADDR_WIDTH(6)
+    `else
         .ADDR_WIDTH(10)
+    `endif
     ) u_out_fifo (
         .clk        (clk),
         .rst_n      (rst_n),
@@ -548,8 +556,7 @@ module npu_axi_wrapper_burst #(
     assign m_axi_awqos   = 4'b1111;
     assign m_axi_arqos   = 4'b1111;
 
-    // 注：对于输入的 m_axi_rid 和 m_axi_bid 信号，NPU 逻辑内部直接忽略即可。
-    // 在 Verilog 中，input 信号悬空不使用会被综合工具自动优化（裁减掉），非常安全。
+    // 注：m_axi_rid 与 m_axi_bid 为未使用输入信号，综合工具会自动优化移除
 
     // =========================================================
     // [模块 3]: AXI-Burst Master 主状态机 (DMA 控制流)
@@ -560,7 +567,7 @@ module npu_axi_wrapper_burst #(
     localparam S_WAIT_ROW        = 4'd3;
     localparam S_FIRST_LINE_INIT = 4'd4;
     
-    localparam S_WAIT_FIFO       = 4'd5; // 【新增】：滑窗发车前的检票站
+    localparam S_WAIT_FIFO       = 4'd5; // 计算窗口启动前的 FIFO 背压检查
     localparam S_COMPUTE         = 4'd6;
     localparam S_UPDATE_WINDOW   = 4'd7;
     localparam S_WAIT_ALL_DONE   = 4'd8;
@@ -595,7 +602,7 @@ module npu_axi_wrapper_burst #(
     // wire [15:0] weight_word_count = sa_cfg_weight_num * {8'd0, cfg_oc_num};
 
     // =========================================================
-    // 终极武器：参数化权重与 Bias 寻址缓冲区 (代替移位拼接)
+    // 参数化权重与 Bias 寻址缓冲区 (替代移位拼接方案)
     // =========================================================
     reg [31:0] sa_weight_buffer [0:SYS_COLS-1];
     reg [31:0] sa_bias_buffer   [0:SYS_COLS-1];
@@ -672,7 +679,7 @@ module npu_axi_wrapper_burst #(
     wire [15:0] safe_burst_cap_words =
         (current_words_left > 16'd256) ? 16'd256 : current_words_left;
 
-    // 3. 终极裁决：同时避免跨 4KB 边界与超越总剩余量
+    // 3. 最终突发长度：同时满足 256-beat 上限、4KB 边界对齐、剩余 word 数量三项约束
     wire [15:0] safe_burst_words =
         (safe_burst_cap_words > words_to_4kb_boundary) ?
             words_to_4kb_boundary : safe_burst_cap_words;
@@ -688,7 +695,6 @@ module npu_axi_wrapper_burst #(
             npu_done_pulse <= 1'b0;
 
             ar_done <= 1'b0;
-            // w_done  <= 1'b0;
             bias_ptr        <= 32'd0;
             weight_ptr      <= 32'd0;
             act_valid_in     <= 1'b0;
@@ -713,7 +719,7 @@ module npu_axi_wrapper_burst #(
             ox <= 16'd0;
             oy <= 16'd0;
 
-            bus_owner_is_pf <= 1'b0; // 初始化时，权柄在 Master 手里
+            bus_owner_is_pf <= 1'b0; // 复位后由主通道占有 AR 总线
             req_load_row <= 1'b0; // 初始化
             // AXI read channel reset
             master_arvalid <= 1'b0;
@@ -730,7 +736,6 @@ module npu_axi_wrapper_burst #(
                     npu_busy <= 1'b0;
 
                     ar_done <= 1'b0;
-                    // w_done  <= 1'b0;
 
                     first_row_loaded <= 1'b0;
                     lb_shift_line_en <= 1'b0;
@@ -756,7 +761,7 @@ module npu_axi_wrapper_burst #(
                         pack_cnt         <= 0;       // 【修改】自适应位宽清零
                         pixel_cnt        <= 16'd0;
                         ig_cnt           <= 3'd0;
-                        // weight_cycle_cnt 可以彻底删除了，因为有了 weight_words_left
+                        // weight_cycle_cnt 已废弃，由 weight_words_left 计数器替代
                         lb_window_base_x <= 6'd0;
                         lb_kernel_kx     <= 2'd0;
                         lb_kernel_ky     <= 2'd0;
@@ -779,13 +784,13 @@ module npu_axi_wrapper_burst #(
                             master_rready    <= 1'b1;
                             ar_done         <= 1'b1;
                             
-                            // 发号施令瞬间结算！（注意乘法优先级括号）
+                            // AR 握手时刻更新地址指针与剩余字节计数
                             bias_ptr        <= bias_ptr + ( ({24'd0, safe_arlen} + 32'd1) << 2 );
                             bias_words_left <= bias_words_left - ({8'd0, safe_arlen} + 16'd1);
                         end else begin
                             master_arvalid <= 1'b1;
-                            master_araddr  <= current_read_ptr;  // 完美复用路由 MUX
-                            master_arlen   <= safe_arlen;        // 完美复用动态裁决
+                            master_araddr  <= current_read_ptr;  // 经 MUX 路由选择
+                            master_arlen   <= safe_arlen;        // 4KB 边界安全的突发长度
                             master_arsize  <= 3'd2;              // 4 bytes / beat
                             master_arburst <= 2'b01;             // INCR
                         end
@@ -803,7 +808,7 @@ module npu_axi_wrapper_burst #(
                                 master_rready <= 1'b0;
                                 ar_done      <= 1'b0;
 
-                                // 降维打击裁决：无论被 4KB 切成多少段，只看最后剩余量！
+                                // Bias 加载完成：剩余 word 计数归零
                                 if (bias_words_left == 16'd0) begin
                                     acc_preload_bias <= 1'b1;
                                     weight_words_left<= weight_word_count;
@@ -828,13 +833,12 @@ module npu_axi_wrapper_burst #(
                             master_rready      <= 1'b1;
                             ar_done           <= 1'b1;
                             
-                            // 瞬间结算！
                             weight_ptr        <= weight_ptr + ( ({24'd0, safe_arlen} + 32'd1) << 2 );
                             weight_words_left <= weight_words_left - ({8'd0, safe_arlen} + 16'd1);
                         end else begin
                             master_arvalid <= 1'b1;
-                            master_araddr  <= current_read_ptr;  // 完美复用路由 MUX
-                            master_arlen   <= safe_arlen;        // 完美复用动态裁决
+                            master_araddr  <= current_read_ptr;  // 经 MUX 路由选择
+                            master_arlen   <= safe_arlen;        // 4KB 边界安全的突发长度
                             master_arsize  <= 3'd2;              // 4 bytes / beat
                             master_arburst <= 2'b01;             // INCR
                         end
@@ -855,12 +859,12 @@ module npu_axi_wrapper_burst #(
                                     end else begin
                                         weight_row_group_cnt <= weight_row_group_cnt + 1;
                                     end
-                                    // 【核心修复】：别忘了把空间计数器复位！否则它会一直加上去
+                                    // 权重行组内所有列配置完毕，归零列索引计数器
                                     weight_num_cnt <= 0; 
                                 end else begin
                                     weight_num_cnt <= weight_num_cnt + 1;
                                 end
-                                pack_cnt     <= 0; // 轮询归零，完美无气泡
+                                pack_cnt     <= 0; // 归零至 slot 0，为下一轮权重列组做准备
                             end else begin
                                 pack_cnt     <= pack_cnt + 1;
                             end
@@ -869,8 +873,8 @@ module npu_axi_wrapper_burst #(
                                 master_rready <= 1'b0;
                                 ar_done      <= 1'b0;
 
-                                // 同样降维打击：不用数 weight_cycle_cnt 了！
-                                // 只要所有词收完了，就是整层权重加载完毕！
+                                // 权重加载完成：所有 word 计数耗尽
+                                // 此方法替代了原有的 weight_cycle_cnt 方案
                                 if (weight_words_left == 16'd0) begin
                                     lb_shift_line_en <= 1'b1; // Pad Top
 
@@ -884,39 +888,36 @@ module npu_axi_wrapper_burst #(
                 S_WAIT_ROW: begin
                     lb_shift_line_en <= 1'b0; // 默认不滚
                     
-                    // 【核心检票】：只看预取小弟干完没有
+                    // 检查预取通道是否已完成当前行加载
                     if (req_load_row == ack_load_row) begin
                         
                         if (!first_row_loaded) begin
-                            // 【预热第 1 段】：第 0 行已经躺在 lb_3 了
+                            // 第一阶段预热：第 0 行已存在于 lb_3 中
                             first_row_loaded <= 1'b1;
-                            lb_shift_line_en <= 1'b1; // 行0 滚入 lb_2
-                            
-                            req_load_row <= ~req_load_row; // 扣扳机！读行 1
-                            // 保持在 S_WAIT_ROW 继续等行 1
+                            lb_shift_line_en <= 1'b1; // 将第 0 行滚入 lb_2
+
+                            req_load_row <= ~req_load_row; // 触发预取第 1 行
+                            // 保持在本状态等待第 1 行到达
                         end 
                         else begin
-                            // 【预热第 2 段 或 中途卡顿恢复】：准备计算了！
-                            lb_shift_line_en <= 1'b1; // 新行滚入 lb_2, 旧行去 lb_1
-                            
-                            // 只要还没到最后，立刻扣扳机！让 AXI 在后台重叠读下一行！
+                            // 第二阶段预热或流水恢复：移位并准备进入计算
+                            lb_shift_line_en <= 1'b1; // 新行滚入 lb_2，旧行去 lb_1
+
+                            // 未到最后一行则触发预取，使 AXI 读取与计算流水重叠
                             if ((oy < cfg_img_h - 2) && (cfg_img_h != 1)) begin
                                 req_load_row <= ~req_load_row;
                             end
 
-                            // 【终极修复】：绝不能直接跳 S_COMPUTE！必须等一拍让 Line Buffer 更新生效！
+                            // 从 S_SHIFT_SYNC 跳转到 S_COMPUTE 需等待一个时钟周期，
+                            // 因为 Line Buffer 在 lb_shift_line_en 有效后的下一拍才完成物理更新
                             state <= S_SHIFT_SYNC;
                         end
                     end
                 end
 
-                // ==========================================
-                // 【新增状态】：等待移位寄存器物理生效的 1 拍缓冲
-                // ==========================================
+                // 等待一拍使 Line Buffer 移位物理生效，
+                // 然后向脉动阵列发送 act_valid_in 令牌
                 S_SHIFT_SYNC: begin
-                    // 此时前一个状态赋予的 lb_shift_line_en 正处于高电平，
-                    // 在本周期的末尾，Line Buffer 才会真正把新行数据吐出来！
-                    // 所以现在必须赶紧把使能拉低，并准备发放数据有效令牌
                     lb_shift_line_en <= 1'b0; 
 
                     if (!fifo_almost_full) begin
@@ -933,9 +934,9 @@ module npu_axi_wrapper_burst #(
                     lb_shift_line_en <= 1'b1;
                     bus_owner_is_pf  <= 1'b1; 
                     first_row_loaded <= 1'b0; // 复位预热标志
-                    req_load_row     <= ~req_load_row; // 扣扳机！读行 0
+                    req_load_row     <= ~req_load_row; // 触发预取第 0 行
 
-                    // 【核心修复1】：初始化读取窗口 X 坐标！
+                    // 初始化滑动窗口坐标
                     lb_window_base_x <= 6'd0; 
                     lb_kernel_kx     <= 2'd0;
                     lb_kernel_ky     <= 2'd0;
@@ -946,8 +947,8 @@ module npu_axi_wrapper_burst #(
 
                 S_COMPUTE: begin
                     lb_shift_line_en <= 1'b0; 
-                    // 【神级重构】：极其优雅的三维嵌套进位计数器！(Look-ahead)
-                    // X 维最快，Y 维居中，通道组维最慢
+                    // 三维嵌套循环计数器 (Look-ahead 方式实现零气泡滑窗)
+                    // 内层: kernel_kx (X 方向), 中层: kernel_ky (Y 方向), 外层: ic_group (通道组)
                     if (lb_kernel_kx == cfg_kernel_kx_max) begin
                         lb_kernel_kx <= 2'd0;
                         if (lb_kernel_ky == cfg_kernel_ky_max) begin
@@ -978,7 +979,8 @@ module npu_axi_wrapper_burst #(
                                         state <= S_UPDATE_WINDOW; 
                                     end
                                 end 
-                                // 🚀 无缝同行跳跃！(解决 FC 累加对齐的杀手锏)
+                                // 同行零气泡跳跃：下一窗口起点为 ox+1，无需插入空闲周期
+                                // 此机制解决了 FC 层累加器对齐问题
                                 else begin
                                     ox <= ox + 1;
                                     // 提前计算好下一拍的基地址
@@ -1085,7 +1087,7 @@ module npu_axi_wrapper_burst #(
     // 2. AXI4 单笔 burst 最多 256 beats，并且不能超过本像素剩余的 word 数
     wire [15:0] safe_wr_burst_cap = (wr_words_left > 16'd256) ? 16'd256 : wr_words_left;
 
-    // 3. 终极裁决：同时避免跨 4KB 边界与超越本像素剩余量
+    // 3. 写突发长度：同时满足 256-beat 上限、4KB 边界对齐、剩余像素 word 数量三项约束
     wire [15:0] safe_wr_burst_words = (safe_wr_burst_cap > wr_words_to_4kb) ? wr_words_to_4kb : safe_wr_burst_cap;
 
     // 4. AXI AWLEN = beats - 1
