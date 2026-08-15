@@ -117,10 +117,12 @@ module npu_line_buffer #(
     end
 
     // 2. 根据外部指令，精准切下当前轮次需要的 32-bit (喂给阵列)
-    always @(*) begin
-        // read_ic_group * 32 计算出起始 bit 索引
-        // +: 32 表示从起始 bit 开始，向上截取固定的 32 bits
-        window_pixel_out = full_pixel[read_ic_group * DATA_WIDTH +: DATA_WIDTH];
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            window_pixel_out <= {DATA_WIDTH{1'b0}};
+        end else begin
+            window_pixel_out <= full_pixel[read_ic_group * DATA_WIDTH +: DATA_WIDTH];
+        end
     end
 
 endmodule

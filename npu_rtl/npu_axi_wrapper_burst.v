@@ -372,6 +372,7 @@ module npu_axi_wrapper_burst #(
     reg  [31:0]           lb_pixel_wr_data_reg;
 
     reg                   act_valid_in;
+    reg                   act_valid_in_d1;
     wire [SYS_ROWS*8-1:0] act_out_skewed;
     wire [SYS_ROWS-1:0]   act_valid_out_skewed;
 
@@ -429,6 +430,15 @@ module npu_axi_wrapper_burst #(
         .window_pixel_out (lb_window_pixel_out)
     );
 
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            act_valid_in_d1 <= 1'b0;
+        end else begin
+            // 抓取原本直接送给 Skew Buffer 的有效信号（组合逻辑或主状态机的源头信号）
+            act_valid_in_d1 <= act_valid_in; 
+        end
+    end
+
     act_skew_buffer #(
         .ROWS(SYS_ROWS), 
         .DATA_WIDTH(8)
@@ -436,7 +446,7 @@ module npu_axi_wrapper_burst #(
         .clk                  (clk),
         .rst_n                (rst_n),
         .act_in_flat          (lb_window_pixel_out),
-        .act_valid_in         (act_valid_in),
+        .act_valid_in         (act_valid_in_d1),
         .act_out_skewed       (act_out_skewed),
         .act_valid_out_skewed (act_valid_out_skewed)
     );
