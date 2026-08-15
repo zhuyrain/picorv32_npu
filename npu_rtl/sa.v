@@ -210,8 +210,24 @@ module sa #(
             // 将最后一排 (r = ROWS - 1) 的 psum_out 拼接成超宽总线传给外部
             assign bottom_psum_out[(i*32)+31 : i*32] = psum_wire[ROWS-1][i];
             
-            // 引出最后一行每一个 PE 内部打拍后的 valid 信号
-            assign bottom_valid_out[i] = act_valid_wire[ROWS-1][i]; 
+            // 【新增】：利用 generate 块的独立作用域，为每一列生成 2 级打拍寄存器
+            // 完美补偿 PE 内部 Stage 2 和 Stage 3 的硬件流水线延迟
+            reg valid_d1;
+            reg valid_d2;
+            
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    valid_d1 <= 1'b0;
+                    valid_d2 <= 1'b0;
+                end else begin
+                    // 抓取最后一行横向传递的 valid 信号（即 PE 内部的 stg1_valid）
+                    valid_d1 <= act_valid_wire[ROWS-1][i];
+                    valid_d2 <= valid_d1;
+                end
+            end
+            
+            // 输出打两拍后的“伪纵向有效信号”，此时它与 bottom_psum_out 在物理时序上严丝合缝
+            assign bottom_valid_out[i] = valid_d2; 
         end
     endgenerate
 

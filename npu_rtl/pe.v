@@ -1,5 +1,6 @@
 `timescale 1ns / 1ps
 
+(* use_dsp = "yes" *)
 module pe #(
     // 物理层面上焊死的最大权重容量（支持第二层的 36 个，甚至可以改得更大）
     parameter MAX_WEIGHTS = 36,
@@ -26,21 +27,15 @@ module pe #(
     output reg         weight_en_out,
     output reg  [3:0]  weight_group_out,
     
+    // 横向数据流
     input  wire        act_valid_in,   // 伴随激活值的数据有效令牌
     output reg         act_valid_out,  // 传递给下一列
-    
-    // ==========================================
-    // 2. 独立通道 1：权重配置专用总线
-    // ==========================================
-    input  wire [31:0] weight_in,
-    output reg  [31:0] weight_out,
-    
-    // ==========================================
-    // 3. 独立通道 2：激活值与部分和数据总线
-    // ==========================================
     input  wire [7:0]  act_in,
     output reg  [7:0]  act_out,
     
+    // 纵向数据流 (权重的配置总线也属于纵向)
+    input  wire [31:0] weight_in,
+    output reg  [31:0] weight_out,
     input  wire [31:0] psum_in,
     output reg  [31:0] psum_out
 );
@@ -58,70 +53,38 @@ module pe #(
     // 3. 【新增】：合法权重标志位 (Dirty Bit / Valid Flag)
     reg weight_valid_flag;
 
-    // integer i;
-
     // ==========================================
-    // 纯组合逻辑运算 (MAC 计算域)
-    // ==========================================
-    // 显式类型转换，告知综合器保留符号位
-    wire signed [7:0]  act_in_s  = $signed(act_in);
-    wire signed [31:0] psum_in_s = $signed(psum_in);
-    
-    // 【核心修复】：组合逻辑实时读取【读指针】指向的权重
-    // 只有当 Flag 为 1 (本层被合法配置过) 时，才使用真实的权重，否则强制路由为 0！
-    wire signed [7:0]  current_weight = weight_valid_flag ? weight_buf[rd_weight_idx] : 8'sd0;
-
-    wire signed [15:0] mult_res;
-    wire signed [31:0] add_res;
-
-    // 【核心抗扰动逻辑】：
-    // 如果当前没有有效的激活数据 (act_valid_in == 0)，说明处于换行气泡或纯传权重态。
-    // 此时乘法结果强行置 0，保证 Psum 瀑布能够干净、无损地向下流动透传！
-    assign mult_res = act_valid_in ? (act_in_s * current_weight) : 16'sd0;
-    assign add_res  = psum_in_s + mult_res;
-
-    // ==========================================
-    // 时序与状态更新逻辑
+    // 块 1：控制、配置与横向数据透传 (Control & Horizontal Flow)
     // ==========================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            act_out       <= 8'd0;   // 恢复为无符号常数
-            act_valid_out <= 1'b0;
-            psum_out      <= 32'd0;
-            weight_en_out <= 1'b0;
-            weight_group_out <= 4'd0;
-            weight_out    <= 32'd0;
-            
+            act_out             <= 8'd0;   
+            act_valid_out       <= 1'b0;
+            weight_en_out       <= 1'b0;
+            weight_group_out    <= 4'd0;
+            weight_out          <= 32'd0;
             npu_start_pulse_out <= 1'b0;
-            weight_valid_flag   <= 1'b0; // 上电默认无效
-            
-            wr_weight_idx <= 8'd0; // 写指针复位
-            rd_weight_idx <= 8'd0; // 读指针复位
-            
-            // // 依然保持对 Buffer 的复位，因为代码规范且不影响整体最优
-            // for (i = 0; i < MAX_WEIGHTS; i = i + 1) begin
-            //     weight_buf[i] <= 8'sd0;
-            // end
+            weight_valid_flag   <= 1'b0; 
+            wr_weight_idx       <= 8'd0; 
+            rd_weight_idx       <= 8'd0; 
         end else begin
-            
-            // --- 1. 控制流与数据流通道：严格打拍向下透传 ---
+            // 1. 横向传递保持 1 拍的相对延迟，维持脉动阵列横向波前
+            act_out       <= act_in;
+            act_valid_out <= act_valid_in;
+
+            // 2. 纵向配置令牌传递
             weight_en_out       <= weight_en_in;
-            act_out             <= act_in;
-            act_valid_out       <= act_valid_in;
             weight_group_out    <= weight_group_in;
-            npu_start_pulse_out <= npu_start_pulse_in; // 级联传递启动脉冲
+            npu_start_pulse_out <= npu_start_pulse_in; 
             
-            // --- 2. 权重合法性 Flag 状态机 ---
+            // 3. 权重合法性标志位更新
             if (npu_start_pulse_in) begin
-                // 每次启动新层计算，强制清空标志位，休眠所有未配置 PE
                 weight_valid_flag <= 1'b0;
-            end 
-            else if (weight_en_in && (weight_group_in == MY_GROUP)) begin
-                // 只有被合法配置的 PE，才会唤醒并使用真实权重
+            end else if (weight_en_in && (weight_group_in == MY_GROUP)) begin
                 weight_valid_flag <= 1'b1;
             end
             
-            // --- 3. 权重配置态 (独立控制 写指针) ---
+            // 4. 写指针与权重缓存更新
             if (weight_en_in) begin
                 if (weight_group_in == MY_GROUP) begin
                     // 将低 8 位写进 Cow Buffer
@@ -138,21 +101,61 @@ module pe #(
                 end
             end 
             
-            // --- 4. 数据驱动计算态 (独立控制 读指针) ---
+            // 5. 读指针更新 (受 act_valid 驱动)
             if (act_valid_in) begin
-                // 读指针同样根据动态边界进行环形自增，与写指针互不干扰！
                 if (rd_weight_idx == cfg_weight_num - 1)
                     rd_weight_idx <= 8'd0;
                 else
                     rd_weight_idx <= rd_weight_idx + 8'd1;
             end
+        end
+    end
+
+    // ==========================================
+    // 块 2：MAC 纵向计算流 (Vertical Computation Flow)
+    // ==========================================
+    
+    // --- 流水线寄存器声明 ---
+    reg signed [7:0]  stg1_act;
+    reg signed [7:0]  stg1_weight;
+    reg               stg1_valid; 
+
+    reg signed [15:0] stg2_mult;
+    reg               stg2_valid; // 【新增】第二级有效令牌
+
+    wire signed [7:0]  act_in_s  = $signed(act_in);
+    wire signed [31:0] psum_in_s = $signed(psum_in);
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            stg1_act    <= 8'sd0;
+            stg1_weight <= 8'sd0;
+            stg1_valid  <= 1'b0;
             
-            // --- 5. Psum 持续流 ---
-            // psum_out 在每个周期持续更新，不受 weight/act 有效性影响。
-            // 组合逻辑 add_res (psum_in + act*weight) 流式传递，
-            // 无效输入通过 gated act_valid_in 和 current_weight 机制产生零值。
-            psum_out <= $unsigned(add_res);
+            stg2_mult   <= 16'sd0;
+            stg2_valid  <= 1'b0;
             
+            psum_out    <= 32'd0;
+        end else begin
+            
+            // --- STAGE 1: 输入寄存器层 (映射到 AREG, BREG) ---
+            stg1_act    <= act_in_s;
+            stg1_weight <= weight_valid_flag ? weight_buf[rd_weight_idx] : 8'sd0; // 无脑读，无脑存
+            stg1_valid  <= act_valid_in;              // 令牌入列
+            
+            // --- STAGE 2: 乘法器层 (映射到 MREG) ---
+            stg2_mult   <= stg1_act * stg1_weight;    // 无脑算，不加任何条件约束
+            stg2_valid  <= stg1_valid;                // 令牌继续打拍向下传递
+            
+            // --- STAGE 3: 累加器与输出层 (映射到 PREG) ---
+            if (stg2_valid) begin
+                // 令牌有效：执行正常的 MAC 累加
+                psum_out <= $unsigned(stg2_mult + psum_in_s);
+            end else begin
+                // 令牌无效：乘法结果作废，Psum 干净无损地透传直通
+                psum_out <= $unsigned(psum_in_s);
+            end
+
         end
     end
 
