@@ -40,6 +40,9 @@ SRC_FILES_1 = $(PROJ_ROOT)/picorv32.v \
               $(SRC_ROOT_NPU)/arbiter.v \
               $(SRC_ROOT_NPU)/priority_encoder.v \
               $(SRC_ROOT_NPU)/axi_dp_sram_hybrid.v \
+			  $(SRC_ROOT_NPU)/axil_cdc.v \
+			  $(SRC_ROOT_NPU)/axil_cdc_wr.v \
+			  $(SRC_ROOT_NPU)/axil_cdc_rd.v \
               $(SRC_ROOT_NPU)/tb_picorv32.v
 TB_TOP_1    = tb_picorv32
 FSDB_NAME_1 = picorv32_soc.fsdb

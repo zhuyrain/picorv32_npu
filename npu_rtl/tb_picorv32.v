@@ -9,7 +9,9 @@ module tb_picorv32 (
 `ifdef FPGA
     // FPGA 上板时的物理端口
     input  wire        clk,
+    input  wire        clk_pico,
     input  wire        resetn,
+    input  wire        resetn_pico,
     input  wire        interconnect_aresetn,
     // =====================================
     // 暴露给外部 Vivado AXI Uartlite IP 的 AXI4-Lite 接口
@@ -38,6 +40,7 @@ module tb_picorv32 (
     // VCS 仿真时的内部驱动信号
     reg clk;
     reg resetn;
+    reg clk_pico;
 `endif
 
     wire trap;
@@ -49,6 +52,11 @@ module tb_picorv32 (
     initial begin
         clk = 0;
         forever #2.5 clk = ~clk; 
+    end
+
+    initial begin
+        clk_pico = 0;
+        forever #5 clk_pico = ~clk_pico; 
     end
 
     initial begin
@@ -85,7 +93,14 @@ module tb_picorv32 (
     // =========================================================================
     // 2. 互联线网定义 (1 Master x 2 Slave)
     // =========================================================================
-    // --- M0: PicoRV32 CPU ---
+    // --- M0: PicoRV32 CPU 原生低速接口---
+    wire        pico_ls_awvalid; wire        pico_ls_awready; wire [31:0] pico_ls_awaddr; wire [ 2:0] pico_ls_awprot;
+    wire        pico_ls_wvalid;  wire        pico_ls_wready;  wire [31:0] pico_ls_wdata;  wire [ 3:0] pico_ls_wstrb;
+    wire        pico_ls_bvalid;  wire        pico_ls_bready;  wire [ 1:0] pico_ls_bresp;
+    wire        pico_ls_arvalid; wire        pico_ls_arready; wire [31:0] pico_ls_araddr; wire [ 2:0] pico_ls_arprot;
+    wire        pico_ls_rvalid;  wire        pico_ls_rready;  wire [31:0] pico_ls_rdata;  wire [ 1:0] pico_ls_rresp;
+
+    // --- M0: CPU CDC转接连接至总线高速 AXI-Lite 接口 (保留原有命名)---
     wire        cpu_awvalid; wire        cpu_awready; wire [31:0] cpu_awaddr; wire [ 2:0] cpu_awprot;
     wire        cpu_wvalid;  wire        cpu_wready;  wire [31:0] cpu_wdata;  wire [ 3:0] cpu_wstrb;
     wire        cpu_bvalid;  wire        cpu_bready;  wire [ 1:0] cpu_bresp;
@@ -273,7 +288,26 @@ module tb_picorv32 (
     wire        cpu_rlast;
     
     // =========================================================================
-    // 3. 例化核心 CPU (PicoRV32 Master)
+    // 复位同步器：生成 CPU 专属的同步复位信号 (异步复位，同步释放)
+    // =========================================================================
+    (* ASYNC_REG = "TRUE" *) reg resetn_pico_sync1;
+    (* ASYNC_REG = "TRUE" *) reg resetn_pico_sync2;
+    wire resetn_pico = resetn_pico_sync2; // 这个信号喂给 CPU 和 CDC 模块的 Slave 端
+
+    always @(posedge clk_pico or negedge resetn) begin
+        if (!resetn) begin
+            // 只要全局复位一拉低，立刻强制复位
+            resetn_pico_sync1 <= 1'b0;
+            resetn_pico_sync2 <= 1'b0;
+        end else begin
+            // 全局复位释放后，用 100MHz 时钟打两拍，确保干净地同步释放
+            resetn_pico_sync1 <= 1'b1;
+            resetn_pico_sync2 <= resetn_pico_sync1;
+        end
+    end
+
+    // =========================================================================
+    // 3. 例化核心 CPU (PicoRV32 运行在低速时钟域 clk_pico)
     // =========================================================================
     picorv32_axi #(
         .COMPRESSED_ISA(1),    
@@ -281,18 +315,72 @@ module tb_picorv32 (
         .ENABLE_DIV(1),
         .ENABLE_IRQ(1)
     ) cpu_core (
-        .clk            (clk),
-        .resetn         (resetn),
+        .clk            (clk_pico),      // 接入 100MHz 低速时钟
+        .resetn         (resetn_pico),   // 建议使用同步到 clk_pico 的复位信号
         .trap           (trap),
 
-        // 连向 M0 总线
-        .mem_axi_awvalid(cpu_awvalid), .mem_axi_awready(cpu_awready), .mem_axi_awaddr (cpu_awaddr), .mem_axi_awprot (cpu_awprot),
-        .mem_axi_wvalid (cpu_wvalid),  .mem_axi_wready (cpu_wready),  .mem_axi_wdata  (cpu_wdata),  .mem_axi_wstrb  (cpu_wstrb),
-        .mem_axi_bvalid (cpu_bvalid),  .mem_axi_bready (cpu_bready),  /* PicoRV32 不接 bresp */
-        .mem_axi_arvalid(cpu_arvalid), .mem_axi_arready(cpu_arready), .mem_axi_araddr (cpu_araddr), .mem_axi_arprot (cpu_arprot),
-        .mem_axi_rvalid (cpu_rvalid),  .mem_axi_rready (cpu_rready),  .mem_axi_rdata  (cpu_rdata),  /* PicoRV32 不接 rresp */
+        // 连向低速域 CDC 输入端
+        .mem_axi_awvalid(pico_ls_awvalid), .mem_axi_awready(pico_ls_awready), .mem_axi_awaddr (pico_ls_awaddr), .mem_axi_awprot (pico_ls_awprot),
+        .mem_axi_wvalid (pico_ls_wvalid),  .mem_axi_wready (pico_ls_wready),  .mem_axi_wdata  (pico_ls_wdata),  .mem_axi_wstrb  (pico_ls_wstrb),
+        .mem_axi_bvalid (pico_ls_bvalid),  .mem_axi_bready (pico_ls_bready),  /* PicoRV32 不接 bresp */
+        .mem_axi_arvalid(pico_ls_arvalid), .mem_axi_arready(pico_ls_arready), .mem_axi_araddr (pico_ls_araddr), .mem_axi_arprot (pico_ls_arprot),
+        .mem_axi_rvalid (pico_ls_rvalid),  .mem_axi_rready (pico_ls_rready),  .mem_axi_rdata  (pico_ls_rdata),  /* PicoRV32 不接 rresp */
 
         .irq({27'b0, npu_done_level, 4'b0}), .pcpi_wr(1'b0), .pcpi_rd(32'b0), .pcpi_wait(1'b0), .pcpi_ready(1'b0)
+    );
+
+    // =========================================================================
+    // 3.5 插入 AXI-Lite 跨时钟域 (CDC) 模块 (四相握手单通道机制)
+    // =========================================================================
+    axil_cdc #(
+        .DATA_WIDTH(32),
+        .ADDR_WIDTH(32)
+    ) u_axil_cdc (
+        // --- Slave Interface (接 PicoRV32, 低速域 100MHz) ---
+        .s_clk          (clk_pico),
+        .s_rst          (~resetn_pico),      // 注意取反，适配 active-high
+        .s_axil_awaddr  (pico_ls_awaddr),
+        .s_axil_awprot  (pico_ls_awprot),
+        .s_axil_awvalid (pico_ls_awvalid),
+        .s_axil_awready (pico_ls_awready),
+        .s_axil_wdata   (pico_ls_wdata),
+        .s_axil_wstrb   (pico_ls_wstrb),
+        .s_axil_wvalid  (pico_ls_wvalid),
+        .s_axil_wready  (pico_ls_wready),
+        .s_axil_bresp   (pico_ls_bresp),
+        .s_axil_bvalid  (pico_ls_bvalid),
+        .s_axil_bready  (pico_ls_bready),
+        .s_axil_araddr  (pico_ls_araddr),
+        .s_axil_arprot  (pico_ls_arprot),
+        .s_axil_arvalid (pico_ls_arvalid),
+        .s_axil_arready (pico_ls_arready),
+        .s_axil_rdata   (pico_ls_rdata),
+        .s_axil_rresp   (pico_ls_rresp),
+        .s_axil_rvalid  (pico_ls_rvalid),
+        .s_axil_rready  (pico_ls_rready),
+
+        // --- Master Interface (接总线, 高速域 200MHz) ---
+        .m_clk          (clk),           // 接入 NPU 所在的 200MHz 高速时钟
+        .m_rst          (~resetn),           // 注意取反
+        .m_axil_awaddr  (cpu_awaddr),        // 完美接管原有的 cpu_* 信号
+        .m_axil_awprot  (cpu_awprot),
+        .m_axil_awvalid (cpu_awvalid),
+        .m_axil_awready (cpu_awready),
+        .m_axil_wdata   (cpu_wdata),
+        .m_axil_wstrb   (cpu_wstrb),
+        .m_axil_wvalid  (cpu_wvalid),
+        .m_axil_wready  (cpu_wready),
+        .m_axil_bresp   (cpu_bresp),
+        .m_axil_bvalid  (cpu_bvalid),
+        .m_axil_bready  (cpu_bready),
+        .m_axil_araddr  (cpu_araddr),
+        .m_axil_arprot  (cpu_arprot),
+        .m_axil_arvalid (cpu_arvalid),
+        .m_axil_arready (cpu_arready),
+        .m_axil_rdata   (cpu_rdata),
+        .m_axil_rresp   (cpu_rresp),
+        .m_axil_rvalid  (cpu_rvalid),
+        .m_axil_rready  (cpu_rready)
     );
 
     // =========================================================================
