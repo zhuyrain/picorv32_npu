@@ -1,6 +1,5 @@
 `timescale 1ns / 1ps
 
-(* use_dsp = "yes" *)
 module pe #(
     // 物理层面上焊死的最大权重容量（支持第二层的 36 个，甚至可以改得更大）
     parameter MAX_WEIGHTS = 36,

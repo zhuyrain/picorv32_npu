@@ -32,7 +32,7 @@ module npu_line_buffer #(
     input  wire [1:0]            kernel_ky,      // 窗口内 Y 偏移 (0~2)
     input  wire [3:0]            read_ic_group,  // 阵列当前在算第几组通道？(0~3)
     // 提取出的单像素输出 (喂给脉动阵列 left_act_in)
-    output reg  [DATA_WIDTH-1:0] window_pixel_out// 喂给PE阵列的结果
+    (* shreg_extract = "no" *) output reg  [DATA_WIDTH-1:0] window_pixel_out// 喂给PE阵列的结果
 );
     localparam MAX_DATA_WIDTH = 32 * MAX_IC_GROUPS; //32是一次AXI读取位宽
     
@@ -105,23 +105,50 @@ module npu_line_buffer #(
     // -----------------------------------------------------------
     // 计算当前的绝对物理 X 坐标 (基准坐标 + 窗口内偏移)
     wire [5:0] read_idx = window_base_x + kernel_kx;
+    
+    // -----------------------------------------------------------
+    // 阶段 1 (Stage 1)：对“最终地址”进行打拍，并在此处爆破扇出！
+    // -----------------------------------------------------------
+    (* max_fanout = "32", equivalent_register_removal = "no" *) reg [5:0] read_idx_reg;
+    (* max_fanout = "32", equivalent_register_removal = "no" *) reg [1:0] kernel_ky_reg;
+    (* max_fanout = "32", equivalent_register_removal = "no" *) reg [3:0] read_ic_group_reg;
+
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            read_idx_reg      <= 6'd0;
+            kernel_ky_reg     <= 2'd0;
+            read_ic_group_reg <= 4'd0;
+        end else begin
+            read_idx_reg      <= read_idx; // 寄存加法的结果！
+            kernel_ky_reg     <= kernel_ky;
+            read_ic_group_reg <= read_ic_group;
+        end
+    end
+
+    // -----------------------------------------------------------
+    // 阶段 2：直接使用高扇出约束保护好的寄存器驱动 MUX
+    // -----------------------------------------------------------
     reg [MAX_DATA_WIDTH-1:0] full_pixel;
 
     // 1. 抽出完整的 MAX_DATA_WIDTH-bit 超级像素
     always @(*) begin
-        case (kernel_ky)
-            2'd0:    full_pixel = lb_0[read_idx];
-            2'd1:    full_pixel = lb_1[read_idx];
-            default: full_pixel = lb_2[read_idx];
+        case (kernel_ky_reg)
+            2'd0:    full_pixel = lb_0[read_idx_reg];
+            2'd1:    full_pixel = lb_1[read_idx_reg];
+            default: full_pixel = lb_2[read_idx_reg];
         endcase
     end
 
+    // -----------------------------------------------------------
+    // 【保留】流水线 Stage 2：输出结果打拍
+    // -----------------------------------------------------------
     // 2. 根据外部指令，精准切下当前轮次需要的 32-bit (喂给阵列)
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             window_pixel_out <= {DATA_WIDTH{1'b0}};
         end else begin
-            window_pixel_out <= full_pixel[read_ic_group * DATA_WIDTH +: DATA_WIDTH];
+            window_pixel_out <= full_pixel[read_ic_group_reg * DATA_WIDTH +: DATA_WIDTH];
         end
     end
 
