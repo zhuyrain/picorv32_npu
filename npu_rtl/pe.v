@@ -61,7 +61,6 @@ module pe #(
             act_valid_out       <= 1'b0;
             weight_en_out       <= 1'b0;
             weight_group_out    <= 4'd0;
-            weight_out          <= 32'd0;
             npu_start_pulse_out <= 1'b0;
             weight_valid_flag   <= 1'b0; 
             wr_weight_idx       <= 8'd0; 
@@ -127,14 +126,8 @@ module pe #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            stg1_act    <= 8'sd0;
-            stg1_weight <= 8'sd0;
             stg1_valid  <= 1'b0;
-            
-            stg2_mult   <= 16'sd0;
             stg2_valid  <= 1'b0;
-            
-            psum_out    <= 32'd0;
         end else begin
             
             // --- STAGE 1: 输入寄存器层 (映射到 AREG, BREG) ---

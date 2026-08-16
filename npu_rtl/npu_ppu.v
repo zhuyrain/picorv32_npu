@@ -40,7 +40,7 @@ module npu_ppu #(
     localparam signed [31:0] CLIP_MIN = -(1 << (DATA_WIDTH - 1)) + 1;
 
     // ============================================================
-    // 【新增】流水线 Stage 1: 输入缓冲层 (切断阵列到 PPU 的布线延迟)
+    // 流水线 Stage 1: 输入缓冲层 (切断阵列到 PPU 的布线延迟)
     // ============================================================
     reg [COLS-1:0]              valid_s1;
     reg signed [PSUM_WIDTH-1:0] acc_s1 [0:COLS-1];
@@ -61,74 +61,89 @@ module npu_ppu #(
     end
 
     // ============================================================
-    // 【重构】流水线 Stage 2: 独立乘法层 (解放 DSP 性能)
+    // 流水线 Stage 2~4: 3级流水的 32x32 乘法器
     // ============================================================
-    reg [COLS-1:0]              valid_s2;
-    reg signed [MULT_WIDTH-1:0] mult_s2 [0:COLS-1]; 
+    // 我们给乘法操作提供 3 拍的宽裕时间，并使用 retiming 属性告诉综合工具：
+    // 请把这些寄存器自动推入 DSP48E1 的内部（AREG, BREG, MREG, PREG）
+    // ============================================================
+    // 强制禁止提取SRL，并强制向前重定时推入DSP48内部
+    // ============================================================
+    
+    (* shreg_extract = "no", retiming_forward = "true" *) reg signed [MULT_WIDTH-1:0] mult_pipe_1 [0:COLS-1]; 
+    (* shreg_extract = "no", retiming_forward = "true" *) reg signed [MULT_WIDTH-1:0] mult_pipe_2 [0:COLS-1]; 
+    (* shreg_extract = "no", retiming_forward = "true" *) reg signed [MULT_WIDTH-1:0] mult_pipe_3 [0:COLS-1]; 
+
+    // Valid 信号也打 3 拍，保持时序对齐 (Valid信号不需要进DSP，只要禁止SRL防止布线拥塞即可)
+    (* shreg_extract = "no" *) reg [COLS-1:0] valid_pipe_1;
+    (* shreg_extract = "no" *) reg [COLS-1:0] valid_pipe_2;
+    (* shreg_extract = "no" *) reg [COLS-1:0] valid_pipe_3;
 
     integer j;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            valid_s2 <= {COLS{1'b0}};
-            for (j = 0; j < COLS; j = j + 1) 
-                mult_s2[j] <= {MULT_WIDTH{1'b0}};
-        end else begin
-            valid_s2 <= valid_s1; // 令牌打 2 拍
+            valid_pipe_1 <= 0;
+            valid_pipe_2 <= 0;
+            valid_pipe_3 <= 0;
             for (j = 0; j < COLS; j = j + 1) begin
-                if (valid_s1[j])
-                    mult_s2[j] <= acc_s1[j] * cfg_multiplier;
+                mult_pipe_1[j] <= 0;
+                mult_pipe_2[j] <= 0;
+                mult_pipe_3[j] <= 0;
             end
-        end
-    end
-
-    // ============================================================
-    // 流水线 Stage 3: 仅完成算术右移
-    //
-    // 将可变移位器与后面的零点加法分开。原来的写法把
-    //   (mult_s2 >>> cfg_shift) + cfg_out_zp
-    // 放在同一个时钟边界，综合后会形成较长的移位器/加法器路径。
-    // ============================================================
-    reg [COLS-1:0]       valid_s3;
-    reg signed [31:0]    shifted_s3 [0:COLS-1];
-
-    integer k;
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            valid_s3 <= {COLS{1'b0}};
-            for (k = 0; k < COLS; k = k + 1)
-                shifted_s3[k] <= 32'd0;
         end else begin
-            valid_s3 <= valid_s2;
-            for (k = 0; k < COLS; k = k + 1) begin
-                if (valid_s2[k])
-                    shifted_s3[k] <= mult_s2[k] >>> cfg_shift;
+            // Valid 信号同步打3拍
+            valid_pipe_1 <= valid_s1; 
+            valid_pipe_2 <= valid_pipe_1;
+            valid_pipe_3 <= valid_pipe_2;
+
+            // 乘法数据打3拍，由综合工具的 Retiming 功能去优化位置
+            for (j = 0; j < COLS; j = j + 1) begin
+                mult_pipe_1[j] <= acc_s1[j] * cfg_multiplier; // 实际乘法发生
+                mult_pipe_2[j] <= mult_pipe_1[j];             // 寄存器级 1
+                mult_pipe_3[j] <= mult_pipe_2[j];             // 寄存器级 2
             end
         end
     end
 
     // ============================================================
-    // 流水线 Stage 4: 零点补偿
+    // 流水线 Stage 4: 仅完成算术右移
     // ============================================================
     reg [COLS-1:0]       valid_s4;
-    reg signed [31:0]    requant_s4 [0:COLS-1];
+    reg signed [31:0]    shifted_s4 [0:COLS-1];
 
     integer l;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             valid_s4 <= {COLS{1'b0}};
-            for (l = 0; l < COLS; l = l + 1)
-                requant_s4[l] <= 32'd0;
         end else begin
-            valid_s4 <= valid_s3;
+            valid_s4 <= valid_pipe_3; // 令牌打 4 拍
             for (l = 0; l < COLS; l = l + 1) begin
-                if (valid_s3[l])
-                    requant_s4[l] <= shifted_s3[l] + cfg_out_zp;
+                if (valid_pipe_3[l])
+                    shifted_s4[l] <= mult_pipe_3[l] >>> cfg_shift;
             end
         end
     end
 
     // ============================================================
-    // 流水线 Stage 5: 饱和截断与最终输出层
+    // 流水线 Stage 5: 零点补偿
+    // ============================================================
+    reg [COLS-1:0]       valid_s5;
+    reg signed [31:0]    requant_s5 [0:COLS-1];
+
+    integer m;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            valid_s5 <= {COLS{1'b0}};
+        end else begin
+            valid_s5 <= valid_s4; // 令牌打 5 拍
+            for (m = 0; m < COLS; m = m + 1) begin
+                if (valid_s4[m])
+                    requant_s5[m] <= shifted_s4[m] + cfg_out_zp;
+            end
+        end
+    end
+
+    // ============================================================
+    // 流水线 Stage 6: 饱和截断与最终输出层
     // ============================================================
     reg signed [DATA_WIDTH-1:0] clipped_val [0:COLS-1]; 
 
@@ -138,29 +153,28 @@ module npu_ppu #(
             always @(*) begin
                 if (cfg_relu_en) begin
                     // 开启 ReLU
-                    if (requant_s4[c] < 0)               clipped_val[c] = 0;
-                    else if (requant_s4[c] > CLIP_MAX)   clipped_val[c] = CLIP_MAX[DATA_WIDTH-1:0];
-                    else                                 clipped_val[c] = requant_s4[c][DATA_WIDTH-1:0];
+                    if (requant_s5[c] < 0)               clipped_val[c] = 0;
+                    else if (requant_s5[c] > CLIP_MAX)   clipped_val[c] = CLIP_MAX[DATA_WIDTH-1:0];
+                    else                                 clipped_val[c] = requant_s5[c][DATA_WIDTH-1:0];
                 end else begin
                     // 仅做 INT8 截断
-                    if (requant_s4[c] < CLIP_MIN)        clipped_val[c] = CLIP_MIN[DATA_WIDTH-1:0];
-                    else if (requant_s4[c] > CLIP_MAX)   clipped_val[c] = CLIP_MAX[DATA_WIDTH-1:0];
-                    else                                 clipped_val[c] = requant_s4[c][DATA_WIDTH-1:0];
+                    if (requant_s5[c] < CLIP_MIN)        clipped_val[c] = CLIP_MIN[DATA_WIDTH-1:0];
+                    else if (requant_s5[c] > CLIP_MAX)   clipped_val[c] = CLIP_MAX[DATA_WIDTH-1:0];
+                    else                                 clipped_val[c] = requant_s5[c][DATA_WIDTH-1:0];
                 end
             end
         end
     endgenerate
 
-    integer m;
+    integer n;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             valid_out <= {COLS{1'b0}};
-            data_out  <= {(COLS*DATA_WIDTH){1'b0}};
         end else begin
-            valid_out <= valid_s4; // 令牌打 5 拍，最终输出
-            for (m = 0; m < COLS; m = m + 1) begin
-                if (valid_s4[m]) begin
-                    data_out[(m*DATA_WIDTH) +: DATA_WIDTH] <= clipped_val[m];
+            valid_out <= valid_s5; // 令牌打 6 拍，最终输出
+            for (n = 0; n < COLS; n = n + 1) begin
+                if (valid_s5[n]) begin
+                    data_out[(n*DATA_WIDTH) +: DATA_WIDTH] <= clipped_val[n];
                 end
             end
         end

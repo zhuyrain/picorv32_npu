@@ -50,7 +50,6 @@ module act_skew_buffer #(
             always @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin
                     for (i = 0; i < PIPE_DEPTH; i = i + 1) begin
-                        delay_pipe[i] <= {DATA_WIDTH{1'b0}};
                         valid_pipe[i] <= 1'b0;         
                     end
                 end else begin

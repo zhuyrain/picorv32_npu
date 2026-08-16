@@ -114,7 +114,6 @@ module npu_line_buffer #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            full_pixel_reg    <= {MAX_DATA_WIDTH{1'b0}};
             read_ic_group_reg <= 4'd0;
         end else begin
             // 此时：输入端 -> read_idx 加法器 -> 行MUX & 列MUX -> 触发器 D 端
