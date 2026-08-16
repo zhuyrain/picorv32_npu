@@ -82,53 +82,70 @@ module npu_ppu #(
     end
 
     // ============================================================
-    // 【新增】流水线 Stage 3: 移位与零点补偿层 (打断长组合逻辑)
+    // 流水线 Stage 3: 仅完成算术右移
+    //
+    // 将可变移位器与后面的零点加法分开。原来的写法把
+    //   (mult_s2 >>> cfg_shift) + cfg_out_zp
+    // 放在同一个时钟边界，综合后会形成较长的移位器/加法器路径。
     // ============================================================
     reg [COLS-1:0]       valid_s3;
-    reg signed [31:0]    requant_s3 [0:COLS-1];
-
-    wire signed [MULT_WIDTH-1:0] shifted_val [0:COLS-1];
-
-    genvar c;
-    generate
-        for (c = 0; c < COLS; c = c + 1) begin : SHIFT_LOGIC
-            assign shifted_val[c] = mult_s2[c] >>> cfg_shift;
-        end
-    endgenerate
+    reg signed [31:0]    shifted_s3 [0:COLS-1];
 
     integer k;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             valid_s3 <= {COLS{1'b0}};
             for (k = 0; k < COLS; k = k + 1)
-                requant_s3[k] <= 32'd0;
+                shifted_s3[k] <= 32'd0;
         end else begin
-            valid_s3 <= valid_s2; // 令牌打 3 拍
+            valid_s3 <= valid_s2;
             for (k = 0; k < COLS; k = k + 1) begin
                 if (valid_s2[k])
-                    requant_s3[k] <= shifted_val[k][31:0] + cfg_out_zp;
+                    shifted_s3[k] <= mult_s2[k] >>> cfg_shift;
             end
         end
     end
 
     // ============================================================
-    // 【重构】流水线 Stage 4: 饱和截断与最终输出层
+    // 流水线 Stage 4: 零点补偿
+    // ============================================================
+    reg [COLS-1:0]       valid_s4;
+    reg signed [31:0]    requant_s4 [0:COLS-1];
+
+    integer l;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            valid_s4 <= {COLS{1'b0}};
+            for (l = 0; l < COLS; l = l + 1)
+                requant_s4[l] <= 32'd0;
+        end else begin
+            valid_s4 <= valid_s3;
+            for (l = 0; l < COLS; l = l + 1) begin
+                if (valid_s3[l])
+                    requant_s4[l] <= shifted_s3[l] + cfg_out_zp;
+            end
+        end
+    end
+
+    // ============================================================
+    // 流水线 Stage 5: 饱和截断与最终输出层
     // ============================================================
     reg signed [DATA_WIDTH-1:0] clipped_val [0:COLS-1]; 
 
+    genvar c;
     generate
         for (c = 0; c < COLS; c = c + 1) begin : CLIP_LOGIC
             always @(*) begin
                 if (cfg_relu_en) begin
                     // 开启 ReLU
-                    if (requant_s3[c] < 0)               clipped_val[c] = 0;
-                    else if (requant_s3[c] > CLIP_MAX)   clipped_val[c] = CLIP_MAX[DATA_WIDTH-1:0];
-                    else                                 clipped_val[c] = requant_s3[c][DATA_WIDTH-1:0];
+                    if (requant_s4[c] < 0)               clipped_val[c] = 0;
+                    else if (requant_s4[c] > CLIP_MAX)   clipped_val[c] = CLIP_MAX[DATA_WIDTH-1:0];
+                    else                                 clipped_val[c] = requant_s4[c][DATA_WIDTH-1:0];
                 end else begin
                     // 仅做 INT8 截断
-                    if (requant_s3[c] < CLIP_MIN)        clipped_val[c] = CLIP_MIN[DATA_WIDTH-1:0];
-                    else if (requant_s3[c] > CLIP_MAX)   clipped_val[c] = CLIP_MAX[DATA_WIDTH-1:0];
-                    else                                 clipped_val[c] = requant_s3[c][DATA_WIDTH-1:0];
+                    if (requant_s4[c] < CLIP_MIN)        clipped_val[c] = CLIP_MIN[DATA_WIDTH-1:0];
+                    else if (requant_s4[c] > CLIP_MAX)   clipped_val[c] = CLIP_MAX[DATA_WIDTH-1:0];
+                    else                                 clipped_val[c] = requant_s4[c][DATA_WIDTH-1:0];
                 end
             end
         end
@@ -140,9 +157,9 @@ module npu_ppu #(
             valid_out <= {COLS{1'b0}};
             data_out  <= {(COLS*DATA_WIDTH){1'b0}};
         end else begin
-            valid_out <= valid_s3; // 令牌打 4 拍，最终输出
+            valid_out <= valid_s4; // 令牌打 5 拍，最终输出
             for (m = 0; m < COLS; m = m + 1) begin
-                if (valid_s3[m]) begin
+                if (valid_s4[m]) begin
                     data_out[(m*DATA_WIDTH) +: DATA_WIDTH] <= clipped_val[m];
                 end
             end

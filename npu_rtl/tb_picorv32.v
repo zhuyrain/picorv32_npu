@@ -11,7 +11,6 @@ module tb_picorv32 (
     input  wire        clk,
     input  wire        clk_pico,
     input  wire        resetn,
-    input  wire        resetn_pico,
     input  wire        interconnect_aresetn,
     // =====================================
     // 暴露给外部 Vivado AXI Uartlite IP 的 AXI4-Lite 接口

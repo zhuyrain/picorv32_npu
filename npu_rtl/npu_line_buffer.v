@@ -103,41 +103,29 @@ module npu_line_buffer #(
     // -----------------------------------------------------------
     // 滑动窗口：动态切片读取逻辑
     // -----------------------------------------------------------
-    // 计算当前的绝对物理 X 坐标 (基准坐标 + 窗口内偏移)
+    // 组合逻辑：计算绝对 X 坐标
     wire [5:0] read_idx = window_base_x + kernel_kx;
     
     // -----------------------------------------------------------
-    // 阶段 1 (Stage 1)：对“最终地址”进行打拍，并在此处爆破扇出！
+    // 阶段 1：直接让加法器和阵列 MUX 跑在纯组合逻辑上，结果在此处打拍截断
     // -----------------------------------------------------------
-    (* max_fanout = "32", equivalent_register_removal = "no" *) reg [5:0] read_idx_reg;
-    (* max_fanout = "32", equivalent_register_removal = "no" *) reg [1:0] kernel_ky_reg;
-    (* max_fanout = "32", equivalent_register_removal = "no" *) reg [3:0] read_ic_group_reg;
-
+    reg [MAX_DATA_WIDTH-1:0] full_pixel_reg;
+    reg [3:0]                read_ic_group_reg; // 必须同步打拍，用于下一级的切片选择
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            read_idx_reg      <= 6'd0;
-            kernel_ky_reg     <= 2'd0;
+            full_pixel_reg    <= {MAX_DATA_WIDTH{1'b0}};
             read_ic_group_reg <= 4'd0;
         end else begin
-            read_idx_reg      <= read_idx; // 寄存加法的结果！
-            kernel_ky_reg     <= kernel_ky;
+            // 此时：输入端 -> read_idx 加法器 -> 行MUX & 列MUX -> 触发器 D 端
+            case (kernel_ky)
+                2'd0:    full_pixel_reg <= lb_0[read_idx];
+                2'd1:    full_pixel_reg <= lb_1[read_idx];
+                default: full_pixel_reg <= lb_2[read_idx];
+            endcase
+            // 将读取 IC 组的控制信号顺延一拍，为了与 full_pixel_reg 在时间上对齐
             read_ic_group_reg <= read_ic_group;
         end
-    end
-
-    // -----------------------------------------------------------
-    // 阶段 2：直接使用高扇出约束保护好的寄存器驱动 MUX
-    // -----------------------------------------------------------
-    reg [MAX_DATA_WIDTH-1:0] full_pixel;
-
-    // 1. 抽出完整的 MAX_DATA_WIDTH-bit 超级像素
-    always @(*) begin
-        case (kernel_ky_reg)
-            2'd0:    full_pixel = lb_0[read_idx_reg];
-            2'd1:    full_pixel = lb_1[read_idx_reg];
-            default: full_pixel = lb_2[read_idx_reg];
-        endcase
     end
 
     // -----------------------------------------------------------
@@ -148,7 +136,8 @@ module npu_line_buffer #(
         if (!rst_n) begin
             window_pixel_out <= {DATA_WIDTH{1'b0}};
         end else begin
-            window_pixel_out <= full_pixel[read_ic_group_reg * DATA_WIDTH +: DATA_WIDTH];
+            // 此时：触发器 Q 端 -> 切片 MUX -> window_pixel_out 触发器 D 端
+            window_pixel_out <= full_pixel_reg[read_ic_group_reg * DATA_WIDTH +: DATA_WIDTH];
         end
     end
 
