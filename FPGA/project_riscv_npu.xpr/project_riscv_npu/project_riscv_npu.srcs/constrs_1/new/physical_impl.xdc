@@ -7,25 +7,25 @@
 # ------------------------------------------------------------------------------
 # 1. 时钟和复位引脚
 # ------------------------------------------------------------------------------
-# 主时钟输入引脚 (对应开发板 CLK_50M)
-set_property PACKAGE_PIN J19 [get_ports clk]
+# 主时钟输入引脚 (对应开发板 FPGA_CLK)
+set_property PACKAGE_PIN Y18 [get_ports clk]
 set_property IOSTANDARD LVCMOS33 [get_ports clk]
 
 # 全局复位输入引脚 (对应开发板 KEY1 按键)
 # 注意: 按键未按下时通常被硬件上拉为高电平，按下为低电平，符合 resetn (低电平有效) 逻辑
-set_property PACKAGE_PIN AA1 [get_ports resetn]
+set_property PACKAGE_PIN AB18 [get_ports resetn]
 set_property IOSTANDARD LVCMOS33 [get_ports resetn]
 
 
 # ------------------------------------------------------------------------------
 # 2. UART 串口引脚
 # ------------------------------------------------------------------------------
-# 串口接收 RXD (对应开发板 UART_RX 输入，外部数据进入FPGA)
-set_property PACKAGE_PIN U2 [get_ports UART_0_rxd]
+# 串口接收 RXD (对应开发板 USB_UART_RX 输入，外部数据进入FPGA)
+set_property PACKAGE_PIN N13 [get_ports UART_0_rxd]
 set_property IOSTANDARD LVCMOS33 [get_ports UART_0_rxd]
 
-# 串口发送 TXD (对应开发板 UART_TX 输出，FPGA数据发向外部)
-set_property PACKAGE_PIN V2 [get_ports UART_0_txd]
+# 串口发送 TXD (对应开发板 USB_UART_TX 输出，FPGA数据发向外部)
+set_property PACKAGE_PIN N14 [get_ports UART_0_txd]
 set_property IOSTANDARD LVCMOS33 [get_ports UART_0_txd]
 
 # ==============================================================================
