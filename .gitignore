@@ -5,3 +5,6 @@
 *.vcd
 *.vvp
 iVerdi/vcs_work*
+FPGA/project_riscv_npu.xpr/project_riscv_npu/*
+!FPGA/project_riscv_npu.xpr/project_riscv_npu/project_riscv_npu.srcs
+FPGA/project_riscv_npu.xpr/project_riscv_npu/project_riscv_npu.srcs/sources_1/bd

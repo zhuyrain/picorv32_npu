@@ -32,7 +32,7 @@ module npu_line_buffer #(
     input  wire [1:0]            kernel_ky,      // 窗口内 Y 偏移 (0~2)
     input  wire [3:0]            read_ic_group,  // 阵列当前在算第几组通道？(0~3)
     // 提取出的单像素输出 (喂给脉动阵列 left_act_in)
-    output reg  [DATA_WIDTH-1:0] window_pixel_out// 喂给PE阵列的结果
+    (* shreg_extract = "no" *) output reg  [DATA_WIDTH-1:0] window_pixel_out// 喂给PE阵列的结果
 );
     localparam MAX_DATA_WIDTH = 32 * MAX_IC_GROUPS; //32是一次AXI读取位宽
     
@@ -103,24 +103,41 @@ module npu_line_buffer #(
     // -----------------------------------------------------------
     // 滑动窗口：动态切片读取逻辑
     // -----------------------------------------------------------
-    // 计算当前的绝对物理 X 坐标 (基准坐标 + 窗口内偏移)
+    // 组合逻辑：计算绝对 X 坐标
     wire [5:0] read_idx = window_base_x + kernel_kx;
-    reg [MAX_DATA_WIDTH-1:0] full_pixel;
+    
+    // -----------------------------------------------------------
+    // 阶段 1：直接让加法器和阵列 MUX 跑在纯组合逻辑上，结果在此处打拍截断
+    // -----------------------------------------------------------
+    reg [MAX_DATA_WIDTH-1:0] full_pixel_reg;
+    reg [3:0]                read_ic_group_reg; // 必须同步打拍，用于下一级的切片选择
 
-    // 1. 抽出完整的 MAX_DATA_WIDTH-bit 超级像素
-    always @(*) begin
-        case (kernel_ky)
-            2'd0:    full_pixel = lb_0[read_idx];
-            2'd1:    full_pixel = lb_1[read_idx];
-            default: full_pixel = lb_2[read_idx];
-        endcase
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            read_ic_group_reg <= 4'd0;
+        end else begin
+            // 此时：输入端 -> read_idx 加法器 -> 行MUX & 列MUX -> 触发器 D 端
+            case (kernel_ky)
+                2'd0:    full_pixel_reg <= lb_0[read_idx];
+                2'd1:    full_pixel_reg <= lb_1[read_idx];
+                default: full_pixel_reg <= lb_2[read_idx];
+            endcase
+            // 将读取 IC 组的控制信号顺延一拍，为了与 full_pixel_reg 在时间上对齐
+            read_ic_group_reg <= read_ic_group;
+        end
     end
 
+    // -----------------------------------------------------------
+    // 【保留】流水线 Stage 2：输出结果打拍
+    // -----------------------------------------------------------
     // 2. 根据外部指令，精准切下当前轮次需要的 32-bit (喂给阵列)
-    always @(*) begin
-        // read_ic_group * 32 计算出起始 bit 索引
-        // +: 32 表示从起始 bit 开始，向上截取固定的 32 bits
-        window_pixel_out = full_pixel[read_ic_group * DATA_WIDTH +: DATA_WIDTH];
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            window_pixel_out <= {DATA_WIDTH{1'b0}};
+        end else begin
+            // 此时：触发器 Q 端 -> 切片 MUX -> window_pixel_out 触发器 D 端
+            window_pixel_out <= full_pixel_reg[read_ic_group_reg * DATA_WIDTH +: DATA_WIDTH];
+        end
     end
 
 endmodule

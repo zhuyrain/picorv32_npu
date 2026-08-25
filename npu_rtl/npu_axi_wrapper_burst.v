@@ -372,6 +372,8 @@ module npu_axi_wrapper_burst #(
     reg  [31:0]           lb_pixel_wr_data_reg;
 
     reg                   act_valid_in;
+    reg                   act_valid_in_d1;
+    reg                   act_valid_in_d2;
     wire [SYS_ROWS*8-1:0] act_out_skewed;
     wire [SYS_ROWS-1:0]   act_valid_out_skewed;
 
@@ -429,6 +431,17 @@ module npu_axi_wrapper_burst #(
         .window_pixel_out (lb_window_pixel_out)
     );
 
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            act_valid_in_d1 <= 1'b0;
+            act_valid_in_d2 <= 1'b0;
+        end else begin
+            // 抓取原本直接送给 Skew Buffer 的有效信号（组合逻辑或主状态机的源头信号）
+            act_valid_in_d1 <= act_valid_in;
+            act_valid_in_d2 <= act_valid_in_d1;
+        end
+    end
+
     act_skew_buffer #(
         .ROWS(SYS_ROWS), 
         .DATA_WIDTH(8)
@@ -436,7 +449,7 @@ module npu_axi_wrapper_burst #(
         .clk                  (clk),
         .rst_n                (rst_n),
         .act_in_flat          (lb_window_pixel_out),
-        .act_valid_in         (act_valid_in),
+        .act_valid_in         (act_valid_in_d2),
         .act_out_skewed       (act_out_skewed),
         .act_valid_out_skewed (act_valid_out_skewed)
     );
@@ -650,14 +663,14 @@ module npu_axi_wrapper_burst #(
     reg ack_load_row;  // 预取状态机回应   (追平即完成)
 
     // =========================================================
-    // 动态 4KB 切片计算器 (支持总线仲裁路由)
+    // 动态 4KB 切片计算器 (独立的数据通路 Datapath)
     // =========================================================
     // 独立的三组剩余量寄存器
     reg [15:0] bias_words_left;
     reg [15:0] weight_words_left;
     reg [15:0] pf_row_words_left;
 
-    // 核心路由 1：MUX 当前指针 (加入了 bus_owner_is_pf 判断)
+    // 核心路由 1：MUX 当前指针 (组合逻辑 MUX，延迟极小，完全可接受)
     wire [31:0] current_read_ptr = 
         (bus_owner_is_pf)        ? pf_act_ptr : 
         (state == S_LOAD_BIAS)   ? bias_ptr :
@@ -669,24 +682,36 @@ module npu_axi_wrapper_burst #(
         (state == S_LOAD_BIAS)   ? bias_words_left :
         (state == S_LOAD_WEIGHT) ? weight_words_left : 16'd0;
 
-    // (剩下的 words_to_4kb_boundary, safe_burst_cap_words, safe_arlen 保持完全不变)
-    // 1. 计算当前指针距离下一个 4KB 边界还有多少个 32-bit Word
-    // 假设指针 4-byte 对齐。1024 个 words 等于 4KB。
-    wire [15:0] words_to_4kb_boundary =
-        16'd1024 - {6'd0, current_read_ptr[11:2]};
+    // --- 独立流水线寄存器 ---
+    reg [15:0] pipe_dist_to_4kb;
+    reg [15:0] pipe_cap_words;
+    reg [15:0] pipe_safe_burst_words;
+    reg [7:0]  pipe_safe_arlen;
 
-    // 2. AXI4 单笔 burst 最多 256 beats
-    wire [15:0] safe_burst_cap_words =
-        (current_words_left > 16'd256) ? 16'd256 : current_words_left;
+    // 独立的 3 级计算流水线 (无条件实时计算)
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pipe_dist_to_4kb      <= 16'd0;
+            pipe_cap_words        <= 16'd0;
+            pipe_safe_burst_words <= 16'd0;
+            pipe_safe_arlen       <= 8'd0;
+        end else begin
+            // Stage 1: 计算距离 4KB 边界与最大容量限制
+            pipe_dist_to_4kb <= 16'd1024 - {6'd0, current_read_ptr[11:2]};
+            pipe_cap_words   <= (current_words_left > 16'd256) ? 16'd256 : current_words_left;
+            
+            // Stage 2: 决断最小值 (满足 4KB 且满足 256 beats 上限)
+            if (pipe_cap_words > pipe_dist_to_4kb)
+                pipe_safe_burst_words <= pipe_dist_to_4kb;
+            else
+                pipe_safe_burst_words <= pipe_cap_words;
+                
+            // Stage 3: 计算最终的 ARLEN = beats - 1
+            pipe_safe_arlen <= pipe_safe_burst_words[7:0] - 8'd1;
+        end
+    end
 
-    // 3. 最终突发长度：同时满足 256-beat 上限、4KB 边界对齐、剩余 word 数量三项约束
-    wire [15:0] safe_burst_words =
-        (safe_burst_cap_words > words_to_4kb_boundary) ?
-            words_to_4kb_boundary : safe_burst_cap_words;
-
-    // 4. AXI AxLEN = beats - 1
-    wire [7:0] safe_arlen = safe_burst_words[7:0] - 8'd1;
-
+    reg[1:0]  ar_prep_cnt;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= S_IDLE;
@@ -699,6 +724,7 @@ module npu_axi_wrapper_burst #(
             weight_ptr      <= 32'd0;
             act_valid_in     <= 1'b0;
             sa_weight_en     <= 1'b0;
+            ar_prep_cnt      <= 2'b0;
             weight_row_group_cnt <= 4'd0;
             weight_num_cnt <= 8'd0;
             lb_shift_line_en <= 1'b0;
@@ -768,31 +794,42 @@ module npu_axi_wrapper_burst #(
                         lb_read_ic_group <= 4'd0;
 
                         bias_words_left  <= bias_word_count;
-
+                        ar_prep_cnt     <= 2'd0; 
                         state <= S_LOAD_BIAS;
                     end
                 end
 
                 S_LOAD_BIAS: begin
                     acc_preload_bias <= 1'b0;
-
+                    // 【流水线推进器】：只要指针刚更新完（cnt被清零），就开始自增直到3
+                    // 它与下方的 AXI 读取是并行进行的
+                    if (ar_prep_cnt < 2'd3) begin
+                        ar_prep_cnt <= ar_prep_cnt + 2'd1;
+                    end
                     // 1. 发起带 4KB 保护的长突发请求
-                    if (!ar_done && bias_words_left != 16'd0) begin
-                        // 按照要求：将握手清零逻辑写在上面
-                        if (master_arvalid && m_axi_arready) begin
-                            master_arvalid   <= 1'b0;
-                            master_rready    <= 1'b1;
-                            ar_done         <= 1'b1;
-                            
-                            // AR 握手时刻更新地址指针与剩余字节计数
-                            bias_ptr        <= bias_ptr + ( ({24'd0, safe_arlen} + 32'd1) << 2 );
-                            bias_words_left <= bias_words_left - ({8'd0, safe_arlen} + 16'd1);
-                        end else begin
-                            master_arvalid <= 1'b1;
-                            master_araddr  <= current_read_ptr;  // 经 MUX 路由选择
-                            master_arlen   <= safe_arlen;        // 4KB 边界安全的突发长度
-                            master_arsize  <= 3'd2;              // 4 bytes / beat
-                            master_arburst <= 2'b01;             // INCR
+                    if (!ar_done && bias_words_left != 16'd0) begin      
+                        // 【握手触发器】：当流水线数据出水（就绪）时，拉高 ARVALID
+                        if (ar_prep_cnt == 2'd3) begin
+                            if (master_arvalid && m_axi_arready) begin
+                                // 握手成功
+                                master_arvalid   <= 1'b0;
+                                master_rready    <= 1'b1;
+                                ar_done         <= 1'b1;
+                                
+                                // 【核心同步点】：指针更新，并同时强制将流水线状态归零！
+                                // 这会在下一个时钟周期，自动激活上方的“流水线推进器”，开始后台静默计算
+                                bias_ptr        <= bias_ptr + (({24'd0, pipe_safe_arlen} + 32'd1) << 2);
+                                bias_words_left <= bias_words_left - ({8'd0, pipe_safe_arlen} + 16'd1);
+                                ar_prep_cnt     <= 2'd0; 
+                            end else begin
+                                // 维持请求
+                                master_arvalid <= 1'b1;
+                                // 此时引用的流水线末端结果 (pipe_safe_arlen) 是绝对稳定、安全的
+                                master_araddr  <= current_read_ptr; 
+                                master_arlen   <= pipe_safe_arlen;  
+                                master_arsize  <= 3'd2;
+                                master_arburst <= 2'b01;
+                            end
                         end
                     end
 
@@ -815,6 +852,7 @@ module npu_axi_wrapper_burst #(
                                     weight_row_group_cnt <= lb_cfg_ic_groups;
                                     weight_num_cnt   <= sa_cfg_weight_num - 1;
                                     pack_cnt         <= 0; // 为权重加载状态提前清零
+                                    ar_prep_cnt      <= 2'd0; 
                                     state            <= S_LOAD_WEIGHT;
                                 end
                             end
@@ -826,21 +864,35 @@ module npu_axi_wrapper_burst #(
                     acc_preload_bias <= 1'b0;
                     sa_weight_en     <= 1'b0; // 默认拉低脉冲
 
+                    // 【流水线推进器】：只要指针刚更新完（cnt被清零），就开始自增直到3
+                    // 它与下方的 AXI 读取（R通道接收数据）是完全并行且互不干扰的
+                    if (ar_prep_cnt < 2'd3) begin
+                        ar_prep_cnt <= ar_prep_cnt + 2'd1;
+                    end
+
                     // 1. 发起带 4KB 保护的长突发流式请求
                     if (!ar_done && weight_words_left != 16'd0) begin
-                        if (master_arvalid && m_axi_arready) begin
-                            master_arvalid     <= 1'b0;
-                            master_rready      <= 1'b1;
-                            ar_done           <= 1'b1;
-                            
-                            weight_ptr        <= weight_ptr + ( ({24'd0, safe_arlen} + 32'd1) << 2 );
-                            weight_words_left <= weight_words_left - ({8'd0, safe_arlen} + 16'd1);
-                        end else begin
-                            master_arvalid <= 1'b1;
-                            master_araddr  <= current_read_ptr;  // 经 MUX 路由选择
-                            master_arlen   <= safe_arlen;        // 4KB 边界安全的突发长度
-                            master_arsize  <= 3'd2;              // 4 bytes / beat
-                            master_arburst <= 2'b01;             // INCR
+                        // 【握手触发器】：当流水线数据出水（就绪）时，才允许拉高 ARVALID
+                        if (ar_prep_cnt == 2'd3) begin
+                            if (master_arvalid && m_axi_arready) begin
+                                // 握手成功
+                                master_arvalid     <= 1'b0;
+                                master_rready      <= 1'b1;
+                                ar_done           <= 1'b1;
+                                
+                                // 【核心同步点】：指针更新，并同时强制将流水线状态归零！
+                                weight_ptr        <= weight_ptr + ( ({24'd0, pipe_safe_arlen} + 32'd1) << 2 );
+                                weight_words_left <= weight_words_left - ({8'd0, pipe_safe_arlen} + 16'd1);
+                                ar_prep_cnt       <= 2'd0; // 触发下一个周期的后台静默预计算
+                            end else begin
+                                // 维持请求
+                                master_arvalid <= 1'b1;
+                                // 此时引用的流水线末端结果是绝对稳定、安全的
+                                master_araddr  <= current_read_ptr;  // 经 MUX 路由选择
+                                master_arlen   <= pipe_safe_arlen;   // 4KB 边界安全的突发长度
+                                master_arsize  <= 3'd2;              // 4 bytes / beat
+                                master_arburst <= 2'b01;             // INCR
+                            end
                         end
                     end
 
@@ -877,7 +929,7 @@ module npu_axi_wrapper_burst #(
                                 // 此方法替代了原有的 weight_cycle_cnt 方案
                                 if (weight_words_left == 16'd0) begin
                                     lb_shift_line_en <= 1'b1; // Pad Top
-
+                                    ar_prep_cnt      <= 2'd0; 
                                     state            <= S_FIRST_LINE_INIT;
                                 end
                             end
@@ -1079,19 +1131,37 @@ module npu_axi_wrapper_burst #(
     // =========================================================
 
     // =========================================================
-    // 写通道专用的动态 4KB 切片计算器
+    // 写通道专用的动态 4KB 切片计算器 (3 级后台流水线)
     // =========================================================
-    // 1. 距离下一个 4KB 边界还有多少个 32-bit Word
-    wire [15:0] wr_words_to_4kb = 16'd1024 - {6'd0, out_ptr[11:2]};
+    reg [15:0] pipe_wr_dist_to_4kb;
+    reg [15:0] pipe_wr_cap_words;
+    reg [15:0] pipe_safe_wr_burst_words;
+    reg [7:0]  pipe_safe_awlen;
 
-    // 2. AXI4 单笔 burst 最多 256 beats，并且不能超过本像素剩余的 word 数
-    wire [15:0] safe_wr_burst_cap = (wr_words_left > 16'd256) ? 16'd256 : wr_words_left;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pipe_wr_dist_to_4kb      <= 16'd0;
+            pipe_wr_cap_words        <= 16'd0;
+            pipe_safe_wr_burst_words <= 16'd0;
+            pipe_safe_awlen          <= 8'd0;
+        end else begin
+            // Stage 1: 计算距离 4KB 边界与当前剩余量的 256-beat 截断
+            pipe_wr_dist_to_4kb <= 16'd1024 - {6'd0, out_ptr[11:2]};
+            pipe_wr_cap_words   <= (wr_words_left > 16'd256) ? 16'd256 : wr_words_left;
+            
+            // Stage 2: 决断最终安全突发字数 (木桶效应取最短)
+            if (pipe_wr_cap_words > pipe_wr_dist_to_4kb)
+                pipe_safe_wr_burst_words <= pipe_wr_dist_to_4kb;
+            else
+                pipe_safe_wr_burst_words <= pipe_wr_cap_words;
+                
+            // Stage 3: 计算 AXI 专属的 AWLEN (beats - 1)
+            pipe_safe_awlen <= pipe_safe_wr_burst_words[7:0] - 8'd1;
+        end
+    end
 
-    // 3. 写突发长度：同时满足 256-beat 上限、4KB 边界对齐、剩余像素 word 数量三项约束
-    wire [15:0] safe_wr_burst_words = (safe_wr_burst_cap > wr_words_to_4kb) ? wr_words_to_4kb : safe_wr_burst_cap;
-
-    // 4. AXI AWLEN = beats - 1
-    wire [7:0] safe_awlen = safe_wr_burst_words[7:0] - 8'd1;
+    // 新增：写状态机专属流水线追踪器
+    reg [1:0] aw_prep_cnt;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -1101,6 +1171,7 @@ module npu_axi_wrapper_burst #(
             pixel_word_idx <= 8'd0;
             w_beats_left   <= 8'd0;
             aw_done        <= 1'b0;
+            aw_prep_cnt    <= 2'd0; // 复位追踪器
 
             m_axi_awaddr  <= 32'd0;
             m_axi_awlen   <= 8'd0;
@@ -1115,10 +1186,20 @@ module npu_axi_wrapper_burst #(
 
             m_axi_bready  <= 1'b0;
         end else begin
+            
+            // =========================================================
+            // 【全局流水线推进器】：只要没算完（<3），后台就无条件推进计算
+            // 无论写状态机是在发数据(W)还是等响应(B)，它都在并行运转
+            // =========================================================
+            if (aw_prep_cnt < 2'd3) begin
+                aw_prep_cnt <= aw_prep_cnt + 2'd1;
+            end
+
             if (npu_start_pulse) begin
                 out_ptr       <= reg_out_base;
                 wr_state      <= 2'd0;
                 aw_done       <= 1'b0;
+                aw_prep_cnt   <= 2'd0; // 【同步点 1】：NPU刚启动，强制清零并计算初始地址
 
                 m_axi_awvalid <= 1'b0;
                 m_axi_wvalid  <= 1'b0;
@@ -1136,6 +1217,7 @@ module npu_axi_wrapper_burst #(
                             wr_words_left  <= {8'd0, cfg_oc_num[7:2]}; 
                             pixel_word_idx <= 8'd0;
                             aw_done        <= 1'b0;
+                            aw_prep_cnt    <= 2'd0;  // 【同步点 2】：接收新像素任务，剩余量发生变化，清零重算！
                             wr_state       <= 2'd1;
                         end
                     end
@@ -1145,28 +1227,34 @@ module npu_axi_wrapper_burst #(
                     // --------------------------------------------------
                     2'd1: begin
                         if (!aw_done) begin
-                            if (m_axi_awvalid && m_axi_awready) begin
-                                m_axi_awvalid <= 1'b0;
-                                aw_done       <= 1'b1;
+                            // 【握手触发器】：流水线 3 拍出水后，才允许驱动总线
+                            if (aw_prep_cnt == 2'd3) begin
+                                if (m_axi_awvalid && m_axi_awready) begin
+                                    m_axi_awvalid <= 1'b0;
+                                    aw_done       <= 1'b1;
 
-                                // 【先知结算】：提前更新地址和剩余量！
-                                out_ptr       <= out_ptr + (({24'd0, safe_awlen} + 32'd1) << 2);
-                                wr_words_left <= wr_words_left - ({8'd0, safe_awlen} + 16'd1);
-                                w_beats_left  <= safe_awlen;
+                                    // 【核心同步点 3】：AW 握手成功，指针与剩余量结算
+                                    // 并强制将流水线状态归零，后台静默准备下一个切片！
+                                    out_ptr       <= out_ptr + (({24'd0, pipe_safe_awlen} + 32'd1) << 2);
+                                    wr_words_left <= wr_words_left - ({8'd0, pipe_safe_awlen} + 16'd1);
+                                    w_beats_left  <= pipe_safe_awlen;
+                                    aw_prep_cnt   <= 2'd0; 
 
-                                // 【准备首拍数据】：通过索引动态切片 FIFO 宽总线
-                                m_axi_wvalid  <= 1'b1;
-                                m_axi_wdata   <= fifo_rd_data[pixel_word_idx * 32 +: 32];
-                                m_axi_wstrb   <= 4'b1111;
-                                m_axi_wlast   <= (safe_awlen == 8'd0) ? 1'b1 : 1'b0;
+                                    // 【准备首拍数据】：通过索引动态切片 FIFO 宽总线
+                                    m_axi_wvalid  <= 1'b1;
+                                    m_axi_wdata   <= fifo_rd_data[pixel_word_idx * 32 +: 32];
+                                    m_axi_wstrb   <= 4'b1111;
+                                    m_axi_wlast   <= (pipe_safe_awlen == 8'd0) ? 1'b1 : 1'b0;
 
-                                wr_state      <= 2'd2;
-                            end else begin
-                                m_axi_awvalid <= 1'b1;
-                                m_axi_awaddr  <= out_ptr;
-                                m_axi_awlen   <= safe_awlen; 
-                                m_axi_awsize  <= 3'd2;      
-                                m_axi_awburst <= 2'b01;     
+                                    wr_state      <= 2'd2;
+                                end else begin
+                                    // 维持请求 (使用绝对稳定的流水线末端结果)
+                                    m_axi_awvalid <= 1'b1;
+                                    m_axi_awaddr  <= out_ptr;
+                                    m_axi_awlen   <= pipe_safe_awlen; 
+                                    m_axi_awsize  <= 3'd2;      
+                                    m_axi_awburst <= 2'b01;     
+                                end
                             end
                         end
                     end
@@ -1212,12 +1300,17 @@ module npu_axi_wrapper_burst #(
                                 if(fifo_empty) begin
                                     wr_state <= 2'd0; // 回去等下一个像素
                                 end else begin
+                                    // 连续写下个像素
                                     wr_words_left  <= {8'd0, cfg_oc_num[7:2]}; 
                                     pixel_word_idx <= 8'd0;
-                                    wr_state <= 2'd1;
+                                    aw_prep_cnt    <= 2'd0; // 【同步点 4】：装载新像素任务，必须强制清零重算！
+                                    wr_state       <= 2'd1;
                                 end
                             end else begin
-                                // 被 4KB 边界切断，当前像素还没发完，回去继续发剩余部分！
+                                // 【零气泡】：被 4KB 边界切断的剩余部分
+                                // 此时跳回 2'd1 (W_AW)。注意这里【没有】清零 aw_prep_cnt！
+                                // 因为在前一个突发漫长的 W 和 B 阶段中，全局的 aw_prep_cnt 早就涨到了 3。
+                                // 下一个时钟周期进入 W_AW 时，直接秒发 AWVALID！
                                 wr_state <= 2'd1;
                             end
                         end
@@ -1231,7 +1324,9 @@ module npu_axi_wrapper_burst #(
     localparam PF_IDLE = 2'd0;
     localparam PF_AR   = 2'd1;
     localparam PF_R    = 2'd2;
+    
     reg [1:0] pf_state;
+    reg [1:0] pf_ar_prep_cnt; // 【新增】：预取机专属的流水线推进器
 
     // =========================================================
     // [模块 5]: 独立运行的 AXI 激活行读取状态机 (ASYNC READ FSM)
@@ -1252,41 +1347,60 @@ module npu_axi_wrapper_burst #(
             pf_rready  <= 1'b0;
             pf_arburst <= 2'b00;
             pf_arsize  <= 3'd0;
+            
+            pf_ar_prep_cnt <= 2'd0; // 复位追踪器
         end else begin
             lb_pixel_wr_en <= 1'b0; // 默认拉低脉冲
             
+            // =========================================================
+            // 【流水线推进器】：与下方的 PF 状态机完全并行
+            // 只要没满 3 拍，就无条件自增，默默等待底层 Datapath 算出 pipe_safe_arlen
+            // =========================================================
+            if (pf_ar_prep_cnt < 2'd3) begin
+                pf_ar_prep_cnt <= pf_ar_prep_cnt + 2'd1;
+            end
+            
             if (npu_start_pulse) begin
                 pf_act_ptr   <= reg_act_base;
-                ack_load_row <= req_load_row; // 强制对齐
+                ack_load_row <= req_load_row; 
                 pf_state     <= PF_IDLE;
                 
-                pf_arvalid <= 1'b0;
-                pf_rready  <= 1'b0;
+                pf_arvalid     <= 1'b0;
+                pf_rready      <= 1'b0;
+                pf_ar_prep_cnt <= 2'd0; // 【核心同步点 1】：初始化改变了指针，强行清零
             end else begin
                 case (pf_state)
                     PF_IDLE: begin
                         if (req_load_row != ack_load_row) begin
                             pf_row_words_left <= row_word_count; 
                             pf_state          <= PF_AR;
+                            pf_ar_prep_cnt    <= 2'd0; // 【核心同步点 2】：接收新任务更新了剩余量，强行清零！
                         end
                     end
 
                     PF_AR: begin
-                        // 发起请求并扣除指针 (注意：用真实的 m_axi_arready 握手)
-                        if (pf_arvalid && m_axi_arready) begin
-                            pf_arvalid <= 1'b0;
-                            pf_rready  <= 1'b1;  // 握手成功后，立刻打开接收阀门
-                            pf_state   <= PF_R;
-                            
-                            // 结算剩余量
-                            pf_act_ptr        <= pf_act_ptr + ( ({24'd0, safe_arlen} + 32'd1) << 2 );
-                            pf_row_words_left <= pf_row_words_left - ({8'd0, safe_arlen} + 16'd1);
-                        end else begin
-                            pf_arvalid <= 1'b1;
-                            pf_araddr  <= pf_act_ptr;
-                            pf_arlen   <= safe_arlen;
-                            pf_arsize  <= 3'd2;              // 4 bytes / beat
-                            pf_arburst <= 2'b01;             // INCR
+                        // 【握手触发器】：当流水线数据出水（就绪）时，拉高 ARVALID
+                        if (pf_ar_prep_cnt == 2'd3) begin
+                            // 发起请求并扣除指针 (注意：用真实的 m_axi_arready 握手)
+                            if (pf_arvalid && m_axi_arready) begin
+                                // 握手成功
+                                pf_arvalid <= 1'b0;
+                                pf_rready  <= 1'b1;  // 立刻打开接收阀门
+                                pf_state   <= PF_R;
+                                
+                                // 【核心同步点 3】：结算剩余量与指针，并强制归零追踪器
+                                pf_act_ptr        <= pf_act_ptr + ( ({24'd0, pipe_safe_arlen} + 32'd1) << 2 );
+                                pf_row_words_left <= pf_row_words_left - ({8'd0, pipe_safe_arlen} + 16'd1);
+                                pf_ar_prep_cnt    <= 2'd0; 
+                            end else begin
+                                // 维持请求
+                                pf_arvalid <= 1'b1;
+                                // 此时引用的 pipe_safe_arlen 是绝对稳定、安全的
+                                pf_araddr  <= pf_act_ptr;
+                                pf_arlen   <= pipe_safe_arlen;
+                                pf_arsize  <= 3'd2;              // 4 bytes / beat
+                                pf_arburst <= 2'b01;             // INCR
+                            end
                         end
                     end
 
@@ -1304,6 +1418,8 @@ module npu_axi_wrapper_burst #(
                                     pf_state     <= PF_IDLE;
                                 end else begin
                                     pf_state     <= PF_AR;
+                                    // 无缝切回 PF_AR！此时在漫长的 PF_R 期间，pf_ar_prep_cnt 早就涨到了 3。
+                                    // 下一个时钟周期，PF_AR 会瞬间拉高 pf_arvalid，实现真正的零气泡发射！
                                 end
                             end
                         end

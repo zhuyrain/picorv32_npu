@@ -29,7 +29,7 @@ module act_skew_buffer #(
 
 
     // ==========================================
-    // 2. Skewing 延迟重排逻辑 (数据与令牌同步延迟)
+    // 2. Skewing 延迟重排逻辑 (整体打断一级关键路径)
     // ==========================================
     genvar r;
     generate
@@ -37,40 +37,37 @@ module act_skew_buffer #(
             
             wire [DATA_WIDTH-1:0] row_in = padded_flat_in[(r * DATA_WIDTH) +: DATA_WIDTH];
             
-            if (r == 0) begin : DELAY_0
-                // 第 0 行：数据与令牌直接透传，无延迟
-                assign act_out_skewed[(r * DATA_WIDTH) +: DATA_WIDTH] = row_in;
-                assign act_valid_out_skewed[r] = act_valid_in;
-                
-            end else begin : DELAY_N
-                // 第 1~N 行：生成深度为 r 的移位寄存器链
-                reg [DATA_WIDTH-1:0] delay_pipe [0 : r-1];
-                reg                  valid_pipe [0 : r-1]; // 【新增】专门给有效令牌建的移位寄存器
-                integer i;
-                
-                always @(posedge clk or negedge rst_n) begin
-                    if (!rst_n) begin
-                        for (i = 0; i < r; i = i + 1) begin
-                            delay_pipe[i] <= {DATA_WIDTH{1'b0}};
-                            valid_pipe[i] <= 1'b0;         // 【新增】令牌复位
-                        end
-                    end else begin
-                        // 第 0 级吃入当前数据和全局令牌
-                        delay_pipe[0] <= row_in;
-                        valid_pipe[0] <= act_valid_in;     // 【新增】吃入令牌
-                        
-                        // 后续级进行移位传递
-                        for (i = 1; i < r; i = i + 1) begin
-                            delay_pipe[i] <= delay_pipe[i-1];
-                            valid_pipe[i] <= valid_pipe[i-1]; // 【新增】移位令牌
-                        end
+            // 所有行统一生成移位寄存器链，深度为 r + 1 
+            // 第 0 行深度为 1（完美切断跨模块组合逻辑）
+            // 第 1 行深度为 2 ... 以此类推
+            
+            localparam PIPE_DEPTH = r + 1; 
+            
+            reg [DATA_WIDTH-1:0] delay_pipe [0 : PIPE_DEPTH-1];
+            reg                  valid_pipe [0 : PIPE_DEPTH-1];
+            integer i;
+            
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    for (i = 0; i < PIPE_DEPTH; i = i + 1) begin
+                        valid_pipe[i] <= 1'b0;         
+                    end
+                end else begin
+                    // 第 0 级吃入当前数据和全局令牌
+                    delay_pipe[0] <= row_in;
+                    valid_pipe[0] <= act_valid_in;     
+                    
+                    // 后续级进行移位传递 (当 PIPE_DEPTH > 1 时生效)
+                    for (i = 1; i < PIPE_DEPTH; i = i + 1) begin
+                        delay_pipe[i] <= delay_pipe[i-1];
+                        valid_pipe[i] <= valid_pipe[i-1];
                     end
                 end
-                
-                // 拼接输出
-                assign act_out_skewed[(r * DATA_WIDTH) +: DATA_WIDTH] = delay_pipe[r-1];
-                assign act_valid_out_skewed[r] = valid_pipe[r-1]; // 【新增】输出打斜后的令牌
             end
+            
+            // 拼接输出 (直接取流水线最后一级的输出)
+            assign act_out_skewed[(r * DATA_WIDTH) +: DATA_WIDTH] = delay_pipe[PIPE_DEPTH-1];
+            assign act_valid_out_skewed[r] = valid_pipe[PIPE_DEPTH-1]; 
             
         end
     endgenerate
