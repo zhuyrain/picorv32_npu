@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 `default_nettype none
-`define FPGA 
+// `define FPGA 
 // =========================================================================
 // 宏定义路由：通过外部编译选项 (+define+FPGA 或 +define+VCS) 决定模块形态
 // =========================================================================
@@ -78,14 +78,14 @@ module tb_picorv32 (
     end
     
     `ifndef REGRESS
-    initial begin
-        $display("Dumping FSDB wave...");
-        $fsdbDumpfile("picorv32_soc.fsdb");
-        $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper);
-        $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper.u_acc);
-        $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper.u_lb);
-        $fsdbDumpvars(1, tb_picorv32); 
-    end
+    // initial begin
+    //     $display("Dumping FSDB wave...");
+    //     $fsdbDumpfile("picorv32_soc.fsdb");
+    //     $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper);
+    //     $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper.u_acc);
+    //     $fsdbDumpvars(1, tb_picorv32.u_npu_wrapper.u_lb);
+    //     $fsdbDumpvars(1, tb_picorv32); 
+    // end
     `endif
 `endif
 
@@ -603,7 +603,7 @@ module tb_picorv32 (
         .ID_WIDTH(4), 
         // SRAM: 0x00000000, NPU: 0x40000000, UART: 0x80000000
         .M_BASE_ADDR({32'h8000_0000, 32'h4000_0000, 32'h0000_0000}), 
-        .M_ADDR_WIDTH({32'd12, 32'd12, 32'd21})
+        .M_ADDR_WIDTH({32'd12, 32'd12, 32'd19})
     ) u_interconnect (
         .clk(clk),
     `ifdef FPGA
@@ -726,11 +726,11 @@ module tb_picorv32 (
     // =========================================================================
     npu_axi_wrapper_burst #(
     `ifdef FPGA
-        .SYS_ROWS(4), 
-        .SYS_COLS(4),
+        .SYS_ROWS(64), 
+        .SYS_COLS(8),
     `else
         .SYS_ROWS(64), 
-        .SYS_COLS(64),
+        .SYS_COLS(8),
     `endif
         .S_AXI_ID_WIDTH(4)       // 新增：匹配 AXI 互联矩阵扩展后的 5-bit ID
     ) u_npu_wrapper (
@@ -850,9 +850,9 @@ module tb_picorv32 (
     // =========================================================================
     axi_dp_sram_hybrid #(
     `ifdef FPGA
-        .MEM_SIZE(131072), // 128KB
+        .MEM_SIZE(524288), // 128KB
     `else
-        .MEM_SIZE(1048576), // 1MB
+        .MEM_SIZE(524288), // 256KB
     `endif
         .S_AXI_ID_WIDTH(4) // 匹配互联矩阵扩展后的 5-bit ID
     ) main_memory (
