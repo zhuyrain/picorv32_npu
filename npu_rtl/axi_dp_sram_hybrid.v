@@ -108,16 +108,16 @@ module axi_dp_sram_hybrid #(
     `ifndef FPGA
         #50; // 仿真为了避开 X 态需要一点延迟，综合时会被 Vivado 自动忽略
         if ($value$plusargs("FW=%s", fw_name)) begin
-            $readmemh(fw_name, ram, 0, 262143);
-            $display("[%0t] [Boot] Dynamic FW Loaded: %s (Size: 1MB)", $time, fw_name);
+            $readmemh(fw_name, ram, 0, 131071);
+            $display("[%0t] [Boot] Dynamic FW Loaded: %s (Size: 512KB)", $time, fw_name);
         end else begin
             // 默认兜底加载
-            $readmemh("firmware.hex", ram, 0, 262143);
-            $display("[%0t] [Boot] Default FW Loaded. (Size: 1MB)", $time);
+            $readmemh("firmware.hex", ram, 0, 131071);
+            $display("[%0t] [Boot] Default FW Loaded. (Size: 512KB)", $time);
         end
     `else
         // 确保路径对齐你的 SRAM 模块实例路径
-        $readmemh("firmware.mem", ram, 0, 32767);
+        $readmemh("firmware.mem", ram, 0, 131071);
         $display("[%0t] [Boot] SRAM Memory initialized with Real Data!", $time);
     `endif
     end

@@ -162,7 +162,7 @@ module sa #(
                     // 现在的 PE 在Conv层计算只需要存属于自己的权重！
                     // 但是最后的全连接层需要存储64个权重
                 `ifdef FPGA
-                    .MAX_WEIGHTS    (36),
+                    .MAX_WEIGHTS    (9),
                 `else
                     .MAX_WEIGHTS    (64),
                 `endif
