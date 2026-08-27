@@ -49,8 +49,6 @@ module npu_ppu #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             valid_s1 <= {COLS{1'b0}};
-            for (i = 0; i < COLS; i = i + 1)
-                acc_s1[i] <= {PSUM_WIDTH{1'b0}};
         end else begin
             valid_s1 <= valid_in; // 令牌打 1 拍
             for (i = 0; i < COLS; i = i + 1) begin
@@ -84,11 +82,6 @@ module npu_ppu #(
             valid_pipe_1 <= 0;
             valid_pipe_2 <= 0;
             valid_pipe_3 <= 0;
-            for (j = 0; j < COLS; j = j + 1) begin
-                mult_pipe_1[j] <= 0;
-                mult_pipe_2[j] <= 0;
-                mult_pipe_3[j] <= 0;
-            end
         end else begin
             // Valid 信号同步打3拍
             valid_pipe_1 <= valid_s1; 

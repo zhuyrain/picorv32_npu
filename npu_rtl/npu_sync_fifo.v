@@ -14,7 +14,7 @@ module npu_sync_fifo #(
 
     // 读端口 (送往 npu_axi_master_lite)
     input  wire                  rd_en,
-    output wire [DATA_WIDTH-1:0] rd_data,
+    output reg [DATA_WIDTH-1:0] rd_data,
 
     // 状态标志
     output wire                  empty,
@@ -57,6 +57,9 @@ module npu_sync_fifo #(
             rd_ptr <= 0;
         end else if (rd_en && !empty) begin
             rd_ptr <= rd_ptr + 1;
+        end
+        if(!empty)begin
+            mem[rd_ptr[ADDR_WIDTH-1:0]] <= rd_data;
         end
     end
 

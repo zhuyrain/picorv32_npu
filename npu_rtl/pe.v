@@ -56,11 +56,9 @@ module pe #(
     // 块 1：控制、配置与横向数据透传 (Control & Horizontal Flow)
     // ==========================================
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            act_out             <= 8'd0;   
+        if (!rst_n) begin  
             act_valid_out       <= 1'b0;
             weight_en_out       <= 1'b0;
-            weight_group_out    <= 4'd0;
             npu_start_pulse_out <= 1'b0;
             weight_valid_flag   <= 1'b0; 
             wr_weight_idx       <= 8'd0; 

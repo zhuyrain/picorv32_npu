@@ -57,13 +57,6 @@ module npu_line_buffer #(
     // -----------------------------------------------------------
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            // // 复位清空
-            // for (i = 0; i < MAX_LINE_WIDTH; i = i + 1) begin
-            //     lb_0[i] <= 0;
-            //     lb_1[i] <= 0;
-            //     lb_2[i] <= 0;
-            //     lb_3[i] <= 0;
-            // end
             wr_ptr    <= {6'b0,cfg_pad_size}; // 初始写指针跳过左侧 Padding 区域
             wr_ig_cnt <= 4'd0;
         end else begin
@@ -131,13 +124,13 @@ module npu_line_buffer #(
     // 【保留】流水线 Stage 2：输出结果打拍
     // -----------------------------------------------------------
     // 2. 根据外部指令，精准切下当前轮次需要的 32-bit (喂给阵列)
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            window_pixel_out <= {DATA_WIDTH{1'b0}};
-        end else begin
+    always @(posedge clk) begin
+        // if (!rst_n) begin
+        //     window_pixel_out <= {DATA_WIDTH{1'b0}};
+        // end else begin
             // 此时：触发器 Q 端 -> 切片 MUX -> window_pixel_out 触发器 D 端
             window_pixel_out <= full_pixel_reg[read_ic_group_reg * DATA_WIDTH +: DATA_WIDTH];
-        end
+        // end
     end
 
 endmodule

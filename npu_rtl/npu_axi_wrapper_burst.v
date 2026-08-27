@@ -720,8 +720,8 @@ module npu_axi_wrapper_burst #(
             npu_done_pulse <= 1'b0;
 
             ar_done <= 1'b0;
-            bias_ptr        <= 32'd0;
-            weight_ptr      <= 32'd0;
+            // bias_ptr        <= 32'd0;
+            // weight_ptr      <= 32'd0;
             act_valid_in     <= 1'b0;
             sa_weight_en     <= 1'b0;
             ar_prep_cnt      <= 2'b0;
@@ -740,7 +740,7 @@ module npu_axi_wrapper_burst #(
             pack_cnt       <= 3'd0;
             pixel_cnt      <= 16'd0;
             drain_cnt      <= 16'd0;
-            bias_words_left<= 16'd0;
+            // bias_words_left<= 16'd0;
 
             ox <= 16'd0;
             oy <= 16'd0;
@@ -749,10 +749,10 @@ module npu_axi_wrapper_burst #(
             req_load_row <= 1'b0; // 初始化
             // AXI read channel reset
             master_arvalid <= 1'b0;
-            master_araddr  <= 32'd0;
-            master_arlen   <= 8'd0;
-            master_arsize  <= 3'd0;
-            master_arburst <= 2'b00;
+            // master_araddr  <= 32'd0;
+            // master_arlen   <= 8'd0;
+            // master_arsize  <= 3'd0;
+            // master_arburst <= 2'b00;
             master_rready  <= 1'b0;
         end else begin
             npu_done_pulse <= 0; // 默认清零脉冲

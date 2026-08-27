@@ -53,8 +53,8 @@ module npu_bottom_acc #(
             always @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin
                     // 复位：严格清零
-                    acc_bank[i]      <= {PSUM_WIDTH{1'b0}};
-                    mac_cnt[i]       <= 8'd0;
+                    // acc_bank[i]      <= {PSUM_WIDTH{1'b0}};
+                    // mac_cnt[i]       <= 8'd0;
                     acc_valid_out[i] <= 1'b0;
                 end 
                 else if (preload_bias) begin
