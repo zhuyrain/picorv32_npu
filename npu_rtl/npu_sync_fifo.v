@@ -6,7 +6,7 @@ module npu_sync_fifo #(
 )(
     input  wire                  clk,
     input  wire                  rst_n,
-    input  wire [9:0]            almost_full_thresh,// 将满阈值 (留 4 拍裕量给飞行数据)
+    input  wire [9:0]            almost_full_thresh,// 将满阈值 (预留拍数计算：阵列行数/（卷积核行*宽） 向上取整，因为发送有效信号是一圈查看一次将满信号)
 
     // 写端口 (来自 npu_deskew_buffer)
     input  wire                  wr_en,

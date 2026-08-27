@@ -409,9 +409,9 @@ module npu_axi_wrapper_burst #(
     npu_line_buffer #( 
     `ifdef FPGA
         .MAX_LINE_WIDTH(34), 
-        .MAX_IC_GROUPS(4),
+        .MAX_IC_GROUPS(16),
     `else
-        .MAX_LINE_WIDTH(64), 
+        .MAX_LINE_WIDTH(34), 
         .MAX_IC_GROUPS(16),
     `endif
         .DATA_WIDTH(SYS_ROWS * 8) // 【核心修改】：自动匹配物理行宽
@@ -530,7 +530,7 @@ module npu_axi_wrapper_burst #(
     `ifdef FPGA
         .ADDR_WIDTH(6)
     `else
-        .ADDR_WIDTH(10)
+        .ADDR_WIDTH(6)
     `endif
     ) u_out_fifo (
         .clk        (clk),
