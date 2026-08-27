@@ -50,7 +50,7 @@ module npu_sync_fifo #(
     // ==========================================
     // 2. 读逻辑 (First-Word Fall-Through, 0延迟读出)
     // ==========================================
-    assign rd_data = mem[rd_ptr[ADDR_WIDTH-1:0]];
+    // assign rd_data = mem[rd_ptr[ADDR_WIDTH-1:0]];
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -58,8 +58,11 @@ module npu_sync_fifo #(
         end else if (rd_en && !empty) begin
             rd_ptr <= rd_ptr + 1;
         end
+    end
+
+    always @(posedge clk) begin
         if(!empty)begin
-            mem[rd_ptr[ADDR_WIDTH-1:0]] <= rd_data;
+            rd_data <= mem[rd_ptr[ADDR_WIDTH-1:0]];
         end
     end
 

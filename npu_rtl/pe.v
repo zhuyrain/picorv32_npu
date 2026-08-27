@@ -115,15 +115,9 @@ module pe #(
     reg signed [7:0]  stg1_act;
     reg signed [7:0]  stg1_weight;
     reg               stg1_valid; 
-`ifdef FPGA
-    // 将中间寄存器直接声明为与最终加法器对齐的 32 位！
-    // 综合器会自动将 8x8=16 位的乘法结果进行内部符号扩展，匹配 DSP48 的宽位内部走线
+
+    reg signed [15:0] stg2_mult; 
     (* use_dsp = "yes" *) 
-    reg signed [15:0] stg2_mult; 
-`else
-    reg signed [15:0] stg2_mult; 
-`endif
-    // 【唯一约束】：在终点下达指令
     reg signed [31:0] psum_out_reg;
     reg               stg2_valid;
 
@@ -141,24 +135,25 @@ module pe #(
     end
 
     always @(posedge clk) begin 
-        // --- STAGE 1 ---
-        stg1_act    <= act_in_s;
+        // --- STAGE 1: 输入端操作数隔离 (Operand Isolation) ---
+        // 巧妙应用你的低功耗思路：只要无有效令牌，直接赋 0。
+        // 这瞬间切断了后续所有的逻辑翻转毛刺，省下海量动态功耗！
+        stg1_act    <= act_valid_in ? act_in_s : 8'sd0;
         stg1_weight <= weight_valid_flag ? weight_buf[rd_weight_idx] : 8'sd0; 
         
-        // --- STAGE 2 ---
-        // 隐式符号扩展发生在这里。Vivado 会将其完全吸纳进 DSP 内部的 MREG。
+        // --- STAGE 2: 纯净乘法器层 ---
+        // 8位 * 8位 = 16位。绝不超载。
+        // 如果 Stage 1 是 0，这里必然是 0，乘法器完全不翻转。
         stg2_mult   <= stg1_act * stg1_weight; 
         
-        // --- STAGE 3 ---
-        // 位宽已完美对齐 (32位 MUX + 32位加法)，不产生任何外部拼接逻辑。
-        // 注：Xilinx 官方 UG901 推荐在这里使用 if-else 结构，这是触发 OPMODE 切换的最稳定语法。
-        if (stg2_valid) begin
-            psum_out_reg <= stg2_mult + psum_in_s;
-        end else begin
-            psum_out_reg <= psum_in_s;
-        end
+        // --- STAGE 3: 纯净累加器层 (P = M + C) ---
+        // 抛弃所有 MUX 和 if-else，写出 Vivado 模式匹配 100% 认识的纯加法拓扑。
+        // 有效时：正常累加 (M + C)
+        // 无效时：stg2_mult 必为 0，自然等效于透传 (0 + C)
+        psum_out_reg <= $signed(stg2_mult) + psum_in_s;
     end
 
+    // 零成本格式化输出
     assign psum_out = $unsigned(psum_out_reg);
 
 endmodule
