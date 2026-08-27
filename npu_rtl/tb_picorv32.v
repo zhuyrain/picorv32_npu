@@ -844,15 +844,15 @@ module tb_picorv32 (
     );
 
     // =========================================================================
-    // 7. 例化 自己手搓的 混合端口 SRAM (2MB)
+    // 7. 例化 自己手搓的 混合端口 SRAM
     //    Port A: AXI4-Lite
     //    Port B: AXI4 Burst，接互联矩阵
     // =========================================================================
     axi_dp_sram_hybrid #(
     `ifdef FPGA
-        .MEM_SIZE(524288), // 128KB
+        .MEM_SIZE(524288), // 512KB
     `else
-        .MEM_SIZE(524288), // 256KB
+        .MEM_SIZE(524288), // 512KB
     `endif
         .S_AXI_ID_WIDTH(4) // 匹配互联矩阵扩展后的 5-bit ID
     ) main_memory (

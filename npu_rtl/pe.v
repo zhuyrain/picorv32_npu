@@ -36,7 +36,7 @@ module pe #(
     input  wire [31:0] weight_in,
     output reg  [31:0] weight_out,
     input  wire [31:0] psum_in,
-    output reg  [31:0] psum_out
+    output wire  [31:0] psum_out
 );
 
     // ==========================================
@@ -117,9 +117,17 @@ module pe #(
     reg signed [7:0]  stg1_act;
     reg signed [7:0]  stg1_weight;
     reg               stg1_valid; 
-
-    reg signed [15:0] stg2_mult;
-    reg               stg2_valid; // 【新增】第二级有效令牌
+`ifdef FPGA
+    // 将中间寄存器直接声明为与最终加法器对齐的 32 位！
+    // 综合器会自动将 8x8=16 位的乘法结果进行内部符号扩展，匹配 DSP48 的宽位内部走线
+    (* use_dsp = "yes" *) 
+    reg signed [15:0] stg2_mult; 
+`else
+    reg signed [15:0] stg2_mult; 
+`endif
+    // 【唯一约束】：在终点下达指令
+    reg signed [31:0] psum_out_reg;
+    reg               stg2_valid;
 
     wire signed [7:0]  act_in_s  = $signed(act_in);
     wire signed [31:0] psum_in_s = $signed(psum_in);
@@ -129,26 +137,30 @@ module pe #(
             stg1_valid  <= 1'b0;
             stg2_valid  <= 1'b0;
         end else begin
-            
-            // --- STAGE 1: 输入寄存器层 (映射到 AREG, BREG) ---
-            stg1_act    <= act_in_s;
-            stg1_weight <= weight_valid_flag ? weight_buf[rd_weight_idx] : 8'sd0; // 无脑读，无脑存
-            stg1_valid  <= act_valid_in;              // 令牌入列
-            
-            // --- STAGE 2: 乘法器层 (映射到 MREG) ---
-            stg2_mult   <= stg1_act * stg1_weight;    // 无脑算，不加任何条件约束
-            stg2_valid  <= stg1_valid;                // 令牌继续打拍向下传递
-            
-            // --- STAGE 3: 累加器与输出层 (映射到 PREG) ---
-            if (stg2_valid) begin
-                // 令牌有效：执行正常的 MAC 累加
-                psum_out <= $unsigned(stg2_mult + psum_in_s);
-            end else begin
-                // 令牌无效：乘法结果作废，Psum 干净无损地透传直通
-                psum_out <= $unsigned(psum_in_s);
-            end
-
+            stg1_valid  <= act_valid_in;
+            stg2_valid  <= stg1_valid;
         end
     end
+
+    always @(posedge clk) begin 
+        // --- STAGE 1 ---
+        stg1_act    <= act_in_s;
+        stg1_weight <= weight_valid_flag ? weight_buf[rd_weight_idx] : 8'sd0; 
+        
+        // --- STAGE 2 ---
+        // 隐式符号扩展发生在这里。Vivado 会将其完全吸纳进 DSP 内部的 MREG。
+        stg2_mult   <= stg1_act * stg1_weight; 
+        
+        // --- STAGE 3 ---
+        // 位宽已完美对齐 (32位 MUX + 32位加法)，不产生任何外部拼接逻辑。
+        // 注：Xilinx 官方 UG901 推荐在这里使用 if-else 结构，这是触发 OPMODE 切换的最稳定语法。
+        if (stg2_valid) begin
+            psum_out_reg <= stg2_mult + psum_in_s;
+        end else begin
+            psum_out_reg <= psum_in_s;
+        end
+    end
+
+    assign psum_out = $unsigned(psum_out_reg);
 
 endmodule
