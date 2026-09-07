@@ -59,41 +59,45 @@ module npu_ppu #(
     end
 
     // ============================================================
-    // 流水线 Stage 2~4: 3级流水的 32x32 乘法器
+    // 流水线 Stage 2~4: 2级流水的 32x32 乘法器
     // ============================================================
-    // 我们给乘法操作提供 3 拍的宽裕时间，并使用 retiming 属性告诉综合工具：
+    // 我们给乘法操作提供 2 拍的宽裕时间，并使用 retiming 属性告诉综合工具：
     // 请把这些寄存器自动推入 DSP48E1 的内部（AREG, BREG, MREG, PREG）
     // ============================================================
     // 强制禁止提取SRL，并强制向前重定时推入DSP48内部
     // ============================================================
-    
-    (* shreg_extract = "no", retiming_forward = "true" *) reg signed [MULT_WIDTH-1:0] mult_pipe_1 [0:COLS-1]; 
-    (* shreg_extract = "no", retiming_forward = "true" *) reg signed [MULT_WIDTH-1:0] mult_pipe_2 [0:COLS-1]; 
-    (* shreg_extract = "no", retiming_forward = "true" *) reg signed [MULT_WIDTH-1:0] mult_pipe_3 [0:COLS-1]; 
+    reg signed [MULT_WIDTH-1:0] mult_pipe_1 [0:COLS-1]; 
+    (* use_dsp = "yes" *) 
+    reg signed [MULT_WIDTH-1:0] mult_pipe_2 [0:COLS-1]; 
 
-    // Valid 信号也打 3 拍，保持时序对齐 (Valid信号不需要进DSP，只要禁止SRL防止布线拥塞即可)
-    (* shreg_extract = "no" *) reg [COLS-1:0] valid_pipe_1;
-    (* shreg_extract = "no" *) reg [COLS-1:0] valid_pipe_2;
-    (* shreg_extract = "no" *) reg [COLS-1:0] valid_pipe_3;
+    // Valid 信号作为控制流，允许使用异步复位
+    (* shreg_extract = "no" *)
+    reg [COLS-1:0] valid_pipe_1;
+    (* shreg_extract = "no" *)
+    reg [COLS-1:0] valid_pipe_2;
 
     integer j;
+
+    // --- 控制流通路：保留异步复位 ---
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             valid_pipe_1 <= 0;
             valid_pipe_2 <= 0;
-            valid_pipe_3 <= 0;
         end else begin
-            // Valid 信号同步打3拍
             valid_pipe_1 <= valid_s1; 
             valid_pipe_2 <= valid_pipe_1;
-            valid_pipe_3 <= valid_pipe_2;
+        end
+    end
 
-            // 乘法数据打3拍，由综合工具的 Retiming 功能去优化位置
-            for (j = 0; j < COLS; j = j + 1) begin
-                mult_pipe_1[j] <= acc_s1[j] * cfg_multiplier; // 实际乘法发生
-                mult_pipe_2[j] <= mult_pipe_1[j];             // 寄存器级 1
-                mult_pipe_3[j] <= mult_pipe_2[j];             // 寄存器级 2
-            end
+    // --- 数据流通路：彻底去除复位，剥离到独立的同步 always 块 ---
+    // 这是保证综合器将算术逻辑完美映射到 DSP 的绝对铁律
+    always @(posedge clk) begin
+        for (j = 0; j < COLS; j = j + 1) begin
+            // 乘法器及其后置寄存器 1 (完美映射到 DSP48 的 MREG)
+            mult_pipe_1[j] <= acc_s1[j] * cfg_multiplier; 
+            
+            // 后置寄存器 2 (完美映射到 DSP48 的 PREG)
+            mult_pipe_2[j] <= mult_pipe_1[j];             
         end
     end
 
@@ -108,10 +112,10 @@ module npu_ppu #(
         if (!rst_n) begin
             valid_s4 <= {COLS{1'b0}};
         end else begin
-            valid_s4 <= valid_pipe_3; // 令牌打 4 拍
+            valid_s4 <= valid_pipe_2; // 令牌打 4 拍
             for (l = 0; l < COLS; l = l + 1) begin
-                if (valid_pipe_3[l])
-                    shifted_s4[l] <= mult_pipe_3[l] >>> cfg_shift;
+                if (valid_pipe_2[l])
+                    shifted_s4[l] <= mult_pipe_2[l] >>> cfg_shift;
             end
         end
     end
