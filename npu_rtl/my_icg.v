@@ -5,9 +5,10 @@ module my_icg (
 );
     reg latch_en;
     // 必须在时钟低电平时锁存 enable 信号，过滤毛刺
+    // 本质是组合逻辑推断为锁存器
     always @(clk_in or enable) begin
         if (!clk_in) begin
-            latch_en <= enable;
+            latch_en = enable;
         end
     end
     
