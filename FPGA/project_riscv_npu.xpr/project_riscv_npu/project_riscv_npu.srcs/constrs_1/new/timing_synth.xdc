@@ -11,8 +11,8 @@
 # 工业级跨时钟域约束：通过物理引脚动态抓取时钟，免疫一切重命名
 # ==============================================================================
 set_clock_groups -name async_cpu_npu -asynchronous \
-    -group [get_clocks -of_objects [get_pins design_1_i/clk_wiz_0/clk_100m]] \
-    -group [get_clocks -of_objects [get_pins design_1_i/clk_wiz_0/clk_200m]]
+    -group [get_clocks -of_objects [get_pins design_1_i/clk_wiz_0/clk_cpu]] \
+    -group [get_clocks -of_objects [get_pins design_1_i/clk_wiz_0/clk_npu]]
 
 # ==============================================================================
 # NPU 准静态配置寄存器时序放宽 (伪路径)
