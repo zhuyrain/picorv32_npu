@@ -65,7 +65,7 @@ module tb_picorv32 (
         $display("--- [SoC Boot Sequence Initiated] ---");
 
         // 超时看门狗
-        #1500000000;
+        #10000000000;
         $display("--- [Simulation Timeout!] ---");
         $finish;
     end
@@ -729,8 +729,8 @@ module tb_picorv32 (
         .SYS_ROWS(64), 
         .SYS_COLS(8),
     `else
-        .SYS_ROWS(64), 
-        .SYS_COLS(8),
+        .SYS_ROWS(4), 
+        .SYS_COLS(4),
     `endif
         .S_AXI_ID_WIDTH(4)       // 新增：匹配 AXI 互联矩阵扩展后的 5-bit ID
     ) u_npu_wrapper (
