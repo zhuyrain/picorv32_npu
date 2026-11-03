@@ -6,15 +6,15 @@ module tb_sa;
         $fsdbDumpvars(0,tb_sa);
     end
 `endif
-    localparam R=8,C=8,P=32;
-    sa_test_driver #(.ROWS(R),.COLS(C),.PSUM_WIDTH(P),.ACC_ROWS(8)) h();
+    localparam R=8,C=8,P=$clog2(R*16384+1)+1,A=48;
+    sa_test_driver #(.ROWS(R),.COLS(C),.PE_PSUM_WIDTH(P),.ACC_WIDTH(A),.ACC_ROWS(8)) h();
     reg [7:0] a[0:1023],b[0:511];
     reg [63:0] expected[0:511];
     integer tags[0:7];
     integer case_id,m_size,k_size,n_size,mb,nb,kb,row,col,tag=0,checked=0;
     integer producer_row,producer_k;
     reg [R*8-1:0] act;
-    reg signed [31:0] got;
+    reg signed [A-1:0] got;
     reg signed [63:0] want;
     string hexdir,filename;
     reg [31:0] producer_rng=32'h56781234;
@@ -80,7 +80,7 @@ module tb_sa;
                         h.wait_result(tags[row]);
                         if(h.result_error[tags[row]]!==2'b00) $fatal(1,"golden case unexpectedly errored");
                         for(col=0;col<C;col=col+1) begin
-                            got=$signed(h.result[tags[row]][col*32+:32]);
+                            got=$signed(h.result[tags[row]][col*A+:A]);
                             want=$signed(expected[(mb+row)*n_size+nb+col]);
                             if(64'(got)!==want)
                                 $fatal(1,"case%0d C[%0d,%0d] got=%0d expected=%0d",case_id,mb+row,nb+col,got,want);

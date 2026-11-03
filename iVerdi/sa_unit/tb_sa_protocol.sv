@@ -1,10 +1,11 @@
 `timescale 1ns/1ps
 module tb_sa_protocol #(
-    parameter ROWS=8,COLS=8,PSUM_WIDTH=32,ACC_ROWS=8,
+    parameter ROWS=8,COLS=8,
+    parameter PE_PSUM_WIDTH=$clog2(ROWS*16384+1)+1, ACC_WIDTH=48,ACC_ROWS=8,
     parameter FIFO_DEPTH=2*(ROWS+COLS)
 );
-    localparam R=ROWS,C=COLS,P=PSUM_WIDTH,L=R+C-1;
-    sa_test_driver #(.ROWS(R),.COLS(C),.PSUM_WIDTH(P),.ACC_ROWS(ACC_ROWS),.FIFO_DEPTH(FIFO_DEPTH)) h();
+    localparam R=ROWS,C=COLS,L=R+C-1;
+    sa_test_driver #(.ROWS(R),.COLS(C),.PE_PSUM_WIDTH(PE_PSUM_WIDTH),.ACC_WIDTH(ACC_WIDTH),.ACC_ROWS(ACC_ROWS),.FIFO_DEPTH(FIFO_DEPTH)) h();
     reg [C*32-1:0] bias;
     reg [R*8-1:0] act;
     reg [C-1:0] mask;
@@ -148,21 +149,36 @@ module tb_sa_protocol #(
             @(negedge h.clk);h.weight_valid=1'b0;
         end
         check_result(last_tag,2'b00);h.drain();
-        // Positive overflow poisons context; later negative cancellation cannot
-        // turn a wrapped/truncated intermediate into a successful result.
+        // INT32 is NOT the overflow boundary for a wide south accumulator.
+        // ACC48/40 preserve both positive and negative excursions and cancel
+        // back to a nonzero bias. The separate ACC32 top retains poison tests.
         constant_bank(0,127);constant_bank(1,-127);
         for(c=0;c<C;c=c+1) bias[c*32+:32]=32'sd2147483640;
         h.set_bias(bias);
         issue(0,{R{8'h7f}},'1,0,1'b1,1'b0);h.wait_south();
-        if(h.fault!==1'b1) $fatal(1,"positive overflow did not set fault");
-        issue(1,{R{8'h7f}},'1,0,1'b0,1'b1);check_result(last_tag,2'b10);h.drain();
+        if(h.fault!==(ACC_WIDTH==32)) $fatal(1,"wrong positive overflow boundary ACC=%0d",ACC_WIDTH);
+        issue(1,{R{8'h7f}},'1,0,1'b0,1'b1);
+        check_result(last_tag,(ACC_WIDTH==32 ? 2'b10 : 2'b00));h.drain();
+        if(ACC_WIDTH>32) begin
+            for(c=0;c<C;c=c+1)
+                if(64'($signed(h.result[last_tag][c*ACC_WIDTH+:ACC_WIDTH]))!==64'($signed(bias[c*32+:32])))
+                    $fatal(1,"wide positive cancellation narrowed at INT32");
+        end
         issue(0,'0,'1,0,1'b1,1'b1);check_result(last_tag,2'b00);
-        if(h.fault!==1'b1) $fatal(1,"successful work cleared sticky fault");
+        if(h.fault!==(ACC_WIDTH==32)) $fatal(1,"wrong sticky fault after success");
         h.flush_dut();
         issue(0,'0,'1,0,1'b1,1'b1);check_result(last_tag,2'b00);h.drain(); // preserved bias
         for(c=0;c<C;c=c+1) bias[c*32+:32]=-32'sd2147483641;
         h.set_bias(bias);
-        issue(1,{R{8'h7f}},'1,0,1'b1,1'b1);check_result(last_tag,2'b10);h.drain();
+        issue(1,{R{8'h7f}},'1,0,1'b1,1'b0);h.wait_south();
+        if(h.fault!==(ACC_WIDTH==32)) $fatal(1,"wrong negative overflow boundary");
+        issue(0,{R{8'h7f}},'1,0,1'b0,1'b1);
+        check_result(last_tag,(ACC_WIDTH==32 ? 2'b10 : 2'b00));h.drain();
+        if(ACC_WIDTH>32) begin
+            for(c=0;c<C;c=c+1)
+                if(64'($signed(h.result[last_tag][c*ACC_WIDTH+:ACC_WIDTH]))!==64'($signed(bias[c*32+:32])))
+                    $fatal(1,"wide negative cancellation narrowed at INT32");
+        end
         h.flush_dut();
         // Masked lanes never trigger overflow (even with near-limit bias).
         issue(1,{R{8'h7f}},'0,0,1'b1,1'b1);check_result(last_tag,2'b00);h.drain();
@@ -205,7 +221,7 @@ module tb_sa_protocol #(
         if(h.result[last_tag]!=='0) $fatal(1,"reset did not clear bias");
         if(h.credit_stalls==0 || h.stalled_cycles==0 || h.south_under_stall==0 || h.dropped<2)
             $fatal(1,"protocol coverage incomplete credit=%0d stall=%0d south=%0d dropped=%0d",h.credit_stalls,h.stalled_cycles,h.south_under_stall,h.dropped);
-        $display("PASS tb_sa_protocol %0dx%0d depth=%0d: inputs=%0d finals=%0d dropped=%0d credit_stalls=%0d south_under_stall=%0d",R,C,FIFO_DEPTH,h.accepted,h.completed,h.dropped,h.credit_stalls,h.south_under_stall);
+        $display("PASS tb_sa_protocol %0dx%0d PE=%0d ACC=%0d depth=%0d: inputs=%0d finals=%0d dropped=%0d credit_stalls=%0d south_under_stall=%0d",R,C,PE_PSUM_WIDTH,ACC_WIDTH,FIFO_DEPTH,h.accepted,h.completed,h.dropped,h.credit_stalls,h.south_under_stall);
         $finish;
     end
     initial begin #4000000;$fatal(1,"protocol wall timeout");end

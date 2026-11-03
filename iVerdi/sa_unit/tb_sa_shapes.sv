@@ -1,8 +1,9 @@
 `timescale 1ns/1ps
 // Both minimum legal FIFO capacity and non-power-of-two pointers are exercised.
-module shape_case #(parameter R=1,C=1,D=R+C)(output reg done=1'b0);
+module shape_case #(parameter R=1,C=1,D=R+C,
+    PE_WIDTH=$clog2(R*16384+1)+1, ACC_WIDTH=48)(output reg done=1'b0);
     localparam A=2, SLOTS=3;
-    sa_test_driver #(.ROWS(R),.COLS(C),.PSUM_WIDTH(32),.ACC_ROWS(SLOTS),
+    sa_test_driver #(.ROWS(R),.COLS(C),.PE_PSUM_WIDTH(PE_WIDTH),.ACC_WIDTH(ACC_WIDTH),.ACC_ROWS(SLOTS),
                      .ACC_ADDR_WIDTH(A),.FIFO_DEPTH(D)) h();
     reg [C*8-1:0] weight;
     reg [C*32-1:0] bias;
@@ -66,8 +67,10 @@ module shape_case #(parameter R=1,C=1,D=R+C)(output reg done=1'b0);
         last_tag=tag;
         h.send_row(0,'0,'1,0,1'b1,1'b1,tag);tag=tag+1;
         h.wait_result(last_tag);h.drain();
-        if(h.result[last_tag]!==bias || h.result_error[last_tag]!==2'b00 || h.fault)
-            $fatal(1,"shape flush bias preservation");
+        for(n=0;n<C;n=n+1)
+            if(64'($signed(h.result[last_tag][n*ACC_WIDTH+:ACC_WIDTH]))!==64'($signed(bias[n*32+:32])) ||
+               h.result_error[last_tag]!==2'b00 || h.fault)
+                $fatal(1,"shape flush bias preservation");
         $display("PASS shape %0dx%0d FIFO=%0d ACC=%0d: inputs=%0d outputs=%0d",R,C,D,SLOTS,h.accepted,h.completed);
         done=1'b1;
     end
@@ -78,7 +81,7 @@ module tb_sa_shapes;
     shape_case #(.R(1),.C(1),.D(2)) s0(d0);
     shape_case #(.R(1),.C(8),.D(9)) s1(d1);
     shape_case #(.R(8),.C(1),.D(9)) s2(d2);
-    shape_case #(.R(3),.C(5),.D(8)) s3(d3);
+    shape_case #(.R(3),.C(5),.D(8),.PE_WIDTH(24),.ACC_WIDTH(40)) s3(d3);
     shape_case #(.R(8),.C(8),.D(17)) s4(d4);
     initial begin wait(d0&&d1&&d2&&d3&&d4);$display("PASS all parameter shapes");$finish;end
     initial begin #2000000;$fatal(1,"shape watchdog timeout");end

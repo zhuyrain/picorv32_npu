@@ -1,119 +1,121 @@
-# SA 第二版：级联权重、自由流水与南侧本地累加
+# SA：窄位宽阵列与独立宽位累加器
 
-本版按本轮四项微架构要求修改 [PE](<../../npu_rtl/pe.v>) 和 [SA](<../../npu_rtl/sa.v>)，新增 [南侧 ACC](<../../npu_rtl/sa_south_acc.v>) 与 [结果 FIFO](<../../npu_rtl/sa_result_fifo.v>)。这是独立计算子系统，不是完整 DMA/命令队列 NPU。初版（48位/全局 stall/顶部 seed）的实现与历史报告保存在 Git 提交 `800e46f`；本目录当前测试不再沿用旧全局冻结模型。
+## 1. 版本与范围
 
-## 1. 数据通路与四项改造
+- `800e46f`：初版（48位阵列、全局stall、顶部seed）。
+- **`d48d9c2`：按用户要求先提交的重构基线**（级联权重、自由流水、32位南侧本地ACC、结果FIFO）。
+- 当前未提交改动：解耦 `PE_PSUM_WIDTH` 与 `ACC_WIDTH`，默认8×8为 **19位阵列 / 48位南侧ACC**。
 
-```text
-北侧权重整行流 B[R-1,:] ... B[0,:]
-        | 各列首PE
-        v 每跳 data/valid/bank/target 寄存
-A行 -> 行skew -> WS PE mesh -> 列deskew -> 南侧ACC[acc_addr][n] -> 结果FIFO -> 消费者
-        每拍前进、无advance                 ^ bias配置          |
-输入控制器 <--------- ready / reserved credit / almost_full ---+
+实现位于 [PE](<../../npu_rtl/pe.v>)、[SA](<../../npu_rtl/sa.v>)、[南侧ACC](<../../npu_rtl/sa_south_acc.v>) 与 [结果FIFO](<../../npu_rtl/sa_result_fifo.v>)。这里只验证计算子系统，不是完整DMA/命令队列NPU。
+
+## 2. 两个独立位宽参数
+
+```verilog
+parameter ROWS = 8;
+parameter PE_PSUM_WIDTH = $clog2(ROWS * 16384 + 1) + 1;
+parameter ACC_WIDTH = 48;
 ```
 
-### 1.1 权重：点到点级联，不再广播到所有物理行
+### 2.1 为什么修正原公式的一个边界位
 
-- 外部 `weight_in[COLS*8-1:0]` 只接北侧首行。随后每个 PE 只连接上方 PE 的 `weight_out` 与同拍的 valid/bank/目标行，控制也逐跳寄存；没有全阵列 `weight_en` 或 `weight_data` 广播树。
-- 每 PE **两个8位驻留权重 PING/PONG，加一个8位转发寄存器**，最多3个权重字节，无9/64项RF、无已选权重副本。默认64 PE：驻留128B，转发64B，合计192B权重数据，另计控制位。
-- 每次 tile 固定 `ROWS` 个成功握手，顺序是 `B[ROWS-1,:]` 到 `B[0,:]`；byte0对应列0。内部生成目标行号，匹配的 PE 捕获，packet继续流至南侧。
-- 一个装载会话只针对一个 bank，可有任意输入 bubble；会话中换 bank 时 `weight_ready=0`，不能交错两个半 tile。最后一次北侧握手后仍须等待南侧 row0 packet 的 ACK；**不能把“已发齐”当作“已装齐”**。
-- 完整空闲 bank 首次重写立即撤销 ready。每次都必须发送所有物理行，无效 K/N 项写0。另一已加载 bank 可同时计算；若新计算与新装载同拍争用同 bank，计算优先。
+完整signed INT8乘积范围为 `[-16256, +16384]`；正极值来自 **(-128)×(-128)=+16384**。物理R行的部分和范围为 `[-16256R, +16384R]`，signed W位的正上界却是 `2^(W-1)-1`。
 
-### 1.2 自由运行与输出 FIFO
+用户给出的 `$clog2(ROWS*16384)+1` 在ROWS为2的幂时少1位：R=8得到18位，但正极值131072超过18位signed上限131071。因此为满足“最极端最小安全位宽”，采用 **`$clog2(ROWS*16384+1)+1`**。不是静默把-128当作不可出现，也没有把结果饱和或回绕。
 
-所有 PE、行 skew、列 deskew、侧带 token 每个时钟前进，只有 reset/flush 可清空；**没有 `advance`、没有下游反压传播到 PE enable**。PE 仅按单一 `act_valid_in` 计算/隔离数据，不再有 `psum_valid_in`、`mac_valid=act_valid&&psum_valid` 或纵向 valid 链。几何对齐由边缘 token 与仿真断言验证。
+| ROWS | 最坏正和 | 安全最小 PE_PSUM_WIDTH |
+|---:|---:|---:|
+| 1 | 16384 | 16 |
+| 3 | 49152 | 17 |
+| 8 | 131072 | 19 |
+| 4096 | 67108864 | 28 |
 
-令 `L_array=ROWS+COLS-1`。输入在边沿 n 接受，对齐部分和在 n+L_array−1 边沿之后有效，在 n+L_array 边沿执行南侧 ACC 和 FIFO enqueue；最早在下一边沿退休。默认8×8：15级阵列、加南侧一级共16级。**延迟按实际时钟数，而非 enabled-step 计数**。
+合法物理ROWS为1..4096，公式中的32位整数乘法在此范围内安全。允许显式扩大PE宽度，不允许小于安全值；`ACC_WIDTH>=32` 且 `ACC_WIDTH>=PE_PSUM_WIDTH`，保证INT32 bias与内部部分和都可无损吸收。参数检查不依赖 `SA_CHECKS`，非法配置仿真启动即失败；综合时忽略这些检查，不代表无效参数可作为合法实现。
 
-FIFO 深度单位是“整行结果向量”，默认 `2*(ROWS+COLS)=32`，必须不小于 `ROWS+COLS=16`。支持非2幂深度，指针显式在 `DEPTH-1` 回绕。只有 `in_last` 的输入产生 FIFO 项，非最后 K 块只更新本地 ACC。
+### 2.2 各层到底用哪个宽度
 
-深度≥延迟本身不能防止溢出。本版采用精确预留 credit：
+| 路径/存储 | 位宽 |
+|---|---|
+| INT8激活、两组驻留权重、权重转发 | 8位 |
+| PE内部乘积 | signed16 |
+| PE垂直psum、底部列deskew、送入南侧的partial | **PE_PSUM_WIDTH** |
+| `bias_data`端口与bias寄存器 | signed INT32，每列32位，不扩大存储 |
+| 南侧history、下一部分和、最终 `out_psum` lane | **ACC_WIDTH** |
+| 南侧临时加法与溢出检测 | **ACC_WIDTH+1** |
+| 结果FIFO数据 | 每列ACC_WIDTH，加bank/address/mask/error元数据 |
+
+窄partial与INT32 bias都在南侧入口**先按各自符号位扩展**；两操作数再扩至ACC_WIDTH+1后做加法。无效列保持0。不能先在32位内相加后再扩位，也不能把unsigned packed lane直接零扩展。南侧history与FIFO完全不回窄到PE宽度或32位。
+
+默认8×8，结果数据端口为 `8*48=384` 位；FIFO每项含metadata共398位，32项约12736个数据位；ACC历史为8×8×48=3072个数据位。若显式覆盖ACC=32/40/56，输出/FIFO/历史宽度随之变化，阵列宽度不会被带着改变。原 `PSUM_WIDTH` 参数已经移除，调用方需改用两个新参数。
+
+### 2.3 数值与错误语义
+
+- first：`sign_extend(INT32_bias) + sign_extend(tile_dot)`；非first：`ACC_history + sign_extend(tile_dot)`。bias只在first加一次。
+- **超过INT32范围不再是错误。** 默认48位可保留宽中间值并允许后续K块抵消，last也可输出超过INT32的合法48位结果。
+- `out_error=1` 仍表示上下文错（缺first、重复first、mask改变）；`out_error=2` 现在表示 **ACC_WIDTH自身** 的signed溢出，而非INT32溢出。
+- 实际ACC溢出仍poison到last，返回错误且整行0；不能把截断值当成功。fault粘滞至flush/reset。显式选择ACC_WIDTH=32时，旧版32位越界诊断仍成立。
+- 有限48位不是“无限轮绝对安全”：完整INT8、任意INT32 bias且逻辑K≤4096时，完整和范围 `[-2214068224,2214592511]`，48位有充分裕量；本模块不计K_total，不限制无限次first/last之间的更新，故保留实际ACC溢出诊断。
+- 本模块没有最终INT32窄化/量化。将宽输出写成INT32或requant时，上层须另做范围检查；不能把本版宽累加成功等同于INT32 debug输出一定可表示。
+
+## 3. 数据流与接口（保留自由流水架构）
 
 ```text
-Q = fifo_level（已排队最终输出）
-P = 已接受、尚未在南侧提交的所有输入行
-U = reserved_level = Q + P <= FIFO_DEPTH
+北侧权重流 B[R-1,:] ... B[0,:]
+           | 每hop byte/valid/bank/target 寄存
+A -> 行skew -> WS mesh [PE_PSUM_WIDTH] -> 列deskew [PE_PSUM_WIDTH]
+                                             |
+                         INT32 bias -> 符号扩展 -> ACC[ACC_WIDTH] -> FIFO[ACC_WIDTH] -> 消费者
+输入控制器 <------------------------ ready / reserved credit / almost_full -------+
+```
+
+### 权重与bank
+
+每PE仍为**两个8位驻留权重＋一个8位转发寄存器**，最多3个字节，无多项RF。`weight_in`仅接北侧首行，再从相邻PE逐跳传递数据与控制，不恢复全局广播。
+
+每tile固定ROWS个握手，按物理行逆序注入，所有K/N尾部显式写0。一个load会话只用一个bank，可有bubble，不可中途切bank；最后注入后还须等待ROWS个后续边沿的南侧ACK，才有 `bank_ready`。bank是驻留权重组，不是另一套计算阵列；默认驻留128B，转发64B。
+
+`bank_busy`只跟踪阵列在途token，南侧提交后即可重装，即使最终结果仍在FIFO。首次重装撤销旧ready；同拍新计算与同bank装载冲突时计算优先。flush取消正在装载的bank，防止部分新旧权重混用。
+
+### 自由流水与credit
+
+PE没有 `advance` 或纵向valid链，仅单一act-valid。所有skew、mesh、deskew每拍前进；改变位宽不改变时序：`L_array=ROWS+COLS-1`，输入边沿n接受，n+L_array−1后aligned partial有效，n+L_array边沿南侧提交/入FIFO，最早再下一边沿输出握手。默认15级阵列＋1级南侧。
+
+FIFO深度单位为整行向量，默认2*(ROWS+COLS)，必须≥ROWS+COLS；支持非2幂回绕。额度守恒：
+
+```text
+P = 已接受、尚未南侧提交的输入行
+Q = fifo_level
+U = reserved_level = P+Q <= FIFO_DEPTH
 U_next = U + in_fire - nonfinal_south_commit - out_fire
 ```
 
-每个输入保守地预留一个向量位置；non-final到南侧释放，final只把预留从阵列转到 FIFO，消费最终输出才释放。空间不足时仅 `in_ready=0`，在途结果仍自然排空。`almost_full=(U==FIFO_DEPTH)` 是**预留额度耗尽**，不是单纯 FIFO 占用阈值。满额同拍 pop 不借给新输入，保守牺牲一次接受机会，简化反馈路径。断言逐拍检查守恒与无溢出。
+non-final留在本地ACC，释放预留；final只把预留转到FIFO，退休后释放。`almost_full=(U==FIFO_DEPTH)` 是预留额度耗尽，满额同拍不借pop信用。消费者阻塞不会冻结PE，在途结果继续排空。
 
-**DMA 集成要求：必须遵守 ready/valid，输入仅在 `in_valid&&in_ready` 时被接受。** 若实际 DMA 仅延迟若干拍响应 almost_full、且这些拍不可撤回，需再加对应 stop-latency margin 或输入 skid/FIFO；不能直接无握手地灌入。当前未实现 DMA，也不把此信号称为任意 DMA 的现成安全阈值。
+**输入DMA必须遵守ready/valid。** 若仅延迟响应almost_full且继续无条件发送，需要额外stop-latency margin/skid空间；FIFO深度≥延迟本身不是防溢出证明。
 
-### 1.3 32位南侧跨轮累加与 bias
+### 本地槽、bias与控制
 
-- 北侧 `in_psum` 已删除，各列 psum 从常数0起算；历史部分和与 bias 不经过阵列。
-- 每输入带 `in_acc_addr/in_first/in_last`。`ACC_ROWS` 默认为8，保存8个 M 行上下文，每槽 `COLS` 个32位值。M、N大矩阵由上层按本地容量切块。
-- first：新上下文 `bias[n]+本次dot[n]`；非first：`acc[addr,n]+本次dot[n]`；last：只在此时产生一个最终输出并释放该槽。不需要外部 SRAM 的部分和回读/回写或顶部反馈。
-- `bias_data` 是独立南侧列向量配置，reset为0。只有阵列无在途输入且无开放ACC上下文时 `bias_ready=1`；若同拍有新计算则计算优先。FIFO中已完成的旧结果不妨碍配置。**bias只在first加一次**。
-- 槽采用组合读、同步写的寄存器数组，支持连续时钟访问同一地址，不依赖 SRAM 未定义同址行为。若改成同步读 SRAM，需要增加 RMW pipeline/forwarding 或互锁并重算延迟与credit。
+`in_acc_addr`选择M行槽，`in_first/in_last`标记多K块上下文，mask在同一上下文中不变；只有last向FIFO输出。默认ACC_ROWS=8，存储为组合读/同步写寄存器数组，支持连续同地址RMW。若映射同步读SRAM，需重新设计旁路/互锁、端口和credit延迟。
 
-### 1.4 32位数值契约与错误
+`bias_valid/ready`配置南侧INT32列向量；只有阵列无在途、无开放ACC上下文时可写，同拍计算优先。已完成FIFO结果不妨碍改bias。`out_bank/out_acc_addr/out_col_mask`来自final输入，阻塞时FIFO头稳定。非法ACC地址不接受（ready0）。
 
-本轮32位 profile 不等于历史 [Spec快照](<reference/NPU_Spec.md>) 的 ACC48 能力。`PSUM_WIDTH` 固定32，合法物理 `ROWS=1..4096`，故单次 INT8 K块部分和在32位内；跨轮与bias在南侧用临时 signed33 位加法检测32位溢出，**不存储33/48位历史部分和**。
-
-| `out_error` | 含义 |
-|---|---|
-| 0 | 本上下文未发现错误，输出有效32位结果 |
-| 1 | 上下文错：无first就累加、未last又重复first、有效列mask改变 |
-| 2 | 任一有效列的南侧加法发生 signed32 中间溢出 |
-
-错误上下文持续 poison 到 last，last 返回错误码且整向量为0；`fault` 粘滞至 flush/reset，诊断不阻塞其他工作或排空。非first保留上下文首错；重复first建立新的错误上下文（以本次mask/bias为起点，报context错），不能视为合法抢占。last后才可正常first复用。mask=0的列不参与数值溢出检查。非法 `in_acc_addr` 不接受（ready0），不是一个自动错误完成命令。
-
-**重要取舍：中间越过INT32后再抵消回范围，本版仍报overflow，不能像初版48位那样成功。** 报错前存入低32位仅供硬件继续排空，绝不会作为成功结果输出。
-
-用户文字“218 accumulations”若指 `2^18` 个乘积项，则32位不能无条件保证：`2^18*127*127=4,228,120,576 > INT32_MAX`。无bias、输入限定[-127,127]的同号最坏安全项数是133144；任意INT32 bias也可能只加一个正乘积就溢出。若是218个项，则无bias的该乘积和在范围内，带任意bias仍需检测。因此本版采取**32位受限/溢出诊断**，不宣称支持任意2^18项精确累加。若必须保留原Spec的宽中间值后抵消语义，应另保宽ACC profile，而非静默缩位。
-
-## 2. 接口摘要
-
-默认 `ROWS=COLS=ACC_ROWS=8`，lane0在最低 byte/word。
-
-| 接口 | 契约 |
-|---|---|
-| `weight_valid/ready, weight_bank, weight_in` | 北侧逆序整tile权重流，移除旧 `weight_row/weight_data` 接口 |
-| `bank_ready[1:0]` | 两组驻留权重分别完整可计算，不是两套物理阵列 |
-| `bank_busy[1:0]` | 仅阵列在途token引用；南侧提交后即可覆写，不再等输出FIFO退休 |
-| `bias_valid/ready, bias_data` | 南侧配置，只有无在途/无开放context可改 |
-| `in_valid/ready, in_bank, in_act` | 接受一M行在当前K块的激活，K/N尾由调用方补0 |
-| `in_acc_addr, in_first, in_last, in_col_mask` | 本地M槽与多轮上下文；mask在同一上下文内保持不变 |
-| `out_valid/ready, out_psum, out_acc_addr, out_bank, out_col_mask, out_error` | 只输出last结果；bank/mask取最终输入的元数据，阻塞时FIFO头稳定 |
-| `fifo_level, reserved_level, almost_full` | 已排队/已预留向量数、credit反馈，不是字节数 |
-| `acc_busy, fault` | 任一开放上下文、粘滞错误诊断 |
-| `flush / rst_n` | 取消计算/FIFO/ACC上下文与在途load；flush保留完整bank和bias，但中断装载的bank无效；reset使所有bank无效且bias清0 |
-
-所有输入在 ready=0 时按握手协议保持不变；flush/reset周期不发生输入、weight、bias或输出握手。一个tile的固定流顺序由调用方负责；接口无行号，不能自动识别调用方把两行权重颠倒。
-
-## 3. PPA/带宽取舍：不强行宣称“所有改动都更优”
-
-1. **连线改善是结构性目标，不是物理签核。** 权重数据/valid/bank/target在每一跳寄存，只保留北侧COLS个入口扇出；原全局advance已移除。clock/reset/flush与边缘控制仍需正常物理设计，未做布局布线证明“无拥塞”。
-2. **级联装载有额外代价。** 每PE多一个转发字节和控制寄存器；最后注入后还要等待南侧ACK，单个load会话也限制两个bank的装载并发。它换取短局部连线，不保证小阵列面积/装载延迟更好。
-3. **FIFO不是免费面积。** 默认结果宽270位，32项约8640个数据位；本地ACC为8×8×32=2048个数据位，另加metadata。当前用寄存器数组，可能比原48位PE+全局stall方案的总FF面积更大。可在端口/延迟确定后映射 SRAM 或调整深度，但不能只为减面积把FIFO降到不满足排空约束。
-4. **自由运行不自动等于低功耗。** 取消全局stall降低enable扇出，但bubble期流水寄存器仍打拍；仅使用单valid隔离输入，未加入复杂门控补回面积/时序开销。后续局部门控需要重新验证在途数据，不能把全局advance偷偷加回来。
-5. **32位缩位以数值范围换面积。** 减少PE/deskew位宽且删除顶部seed路由，但失去48位中间抵消能力；已用显式错误语义代替静默回绕。
-6. **本地ACC减少的是不必要的跨K反馈。** 五组用例接受616个K行token，仅232个最终向量输出。其余384个non-final更新留在南侧；这是接口传输计数，不是实测系统 SRAM 带宽或端到端加速比。当前无DMA/SRAM系统连接。
-7. **不能只看PE关键路径。** 新的南侧读mux+32位vector加法+FIFO写可能成为新瓶颈。单拍MAC/南侧RMW均需后续综合、工艺库和时序约束；本次VCS功能通过不代表PPA/Fmax改善。
+flush禁止所有握手，清阵列/FIFO/context/fault，保留完整权重组和bias；中断load的bank无效。reset另使全部bank无效并清bias为0。
 
 ## 4. 验证与复现
 
-[生成器](<gen_vectors.py>) 校验 [固定来源manifest](<reference/manifest.json>) 的 SHA256，再用Python任意精度整数重算 [五组向量](<reference/test_vector_hwc_im2col_tiles.h>)，原子发布hex，无第三方依赖。case3–5的A明确为全1。默认参考提交不随远端分支漂移。
+[生成器](<gen_vectors.py>)按[固定manifest](<reference/manifest.json>)校验[五组向量](<reference/test_vector_hwc_im2col_tiles.h>)并用Python整数GEMM重算，case3–5激活全1。所有输出原子发布，source快照不修改。
 
 ```sh
-python3 iVerdi/sa_unit/gen_vectors.py
-make -C iVerdi/sa_unit regress              # 三top，各seed 1/7/42
-make -C iVerdi/sa_unit test TOP=tb_sa_protocol
+make -C iVerdi/sa_unit regress
 make -C iVerdi/sa_unit test FSDB=1
 make -C iVerdi/sa_unit wave FSDB=1
 ```
 
-- [共享driver/checker](<sa_test_driver.sv>)：输入端独立int64 GEMM/上下文数学模型、固定时钟token pipe、独立期望FIFO，逐拍检查credit、顺序、稳定性、bank释放及fault；不读取DUT权重/ACC内存构造期望。
-- [黄金向量TB](<tb_sa.sv>)：全部1856个最终元素，K=27按8/8/8/3、先污染bank再尾零，两bank装载与计算重叠；无任何部分和反馈输入。
-- [协议TB](<tb_sa_protocol.sv>)：加载bubble/错bank/半装载、bias一次、多槽交织和同槽连续RMW、FIFO满/输入credit停顿/在途自由排空、输出未退休时重装bank、上下文错、正负溢出和抵消仍失败、flush/reset。
-- [参数TB](<tb_sa_shapes.sv>)：1×1、1×8、8×1、3×5使用最小FIFO深度2/9/9/8，另加8×8/FIFO17；覆盖非2幂回绕与3个ACC槽的非法地址测试。所有失败与超时均 `$fatal` 非零退出。
+[共享checker](<sa_test_driver.sv>)使用独立int64数学模型与固定时钟pipe/FIFO，检查credit、顺序、数据、错误、bank ACK和反压稳定，不读取DUT内存构造期望。当前验证覆盖ACC32/40/48/56，checker支持至63位，不因此限制RTL可配置上限。
 
-实际工具版本、运行统计与日志见 [验证报告](<RESULTS.md>)。生成目录被Git忽略，报告仅链接当前本地结果；代码测试以命令可复现为准。
+[主向量测试](<tb_sa.sv>)覆盖全部1856个最终元素、616个K行token/232个最终向量，K27按8/8/8/3、先污染后尾零，无外部部分和反馈。[协议测试](<tb_sa_protocol.sv>)保留串行装载、bias一次、多槽/同槽RMW、满FIFO排空、上下文错与flush/reset，并将默认48位下的INT32越界抵消改为成功；[32位配置测试](<tb_sa_protocol32.sv>)单独保留ACC32溢出poison验收。[参数测试](<tb_sa_shapes.sv>)包含最小/非2幂FIFO与独立PE24/ACC40配置。附加位宽/南侧边界测试检查-128×-128正端点、负partial/负bias扩展及真正ACC位宽溢出。具体顶层和实际结果见[验证报告](<RESULTS.md>)。
 
-## 5. 尚未集成
+## 5. PPA取舍与尚未集成
 
-旧卷积wrapper/旧外部skew/PPU与本接口不兼容，未运行或宣称原SoC固件回归通过。本版没有DMA、片上SP、命令ABI、完整K_total/依赖检查、量化/ReLU或IRQ；它们需要独立EX/控制器接入，不能靠 `first/last` 冒充完整旧Spec。参考Spec快照保持原样，本轮32位profile差异以上述章节为准。未做综合/PPA、STA、CDC或全网络黄金验收。
+默认PE/deskew从32位降为19位，但ACC从32位升48位，FIFO也随输出变宽；这是把宽数值状态集中在边缘，不保证总FF面积或功耗下降。权重转发与FIFO也有面积/装载延迟成本。自由运行减少全局enable扇出，却不自动减少bubble期翻转；南侧读mux＋48位加法＋FIFO写可能成为时序瓶颈，必须综合/布局布线后判断。
+
+仍未集成旧SoC wrapper、DMA、片上SP、完整命令ABI/K_total依赖检查、量化/ReLU或IRQ，旧卷积固件不能直接沿用。本轮没有PPA/Fmax/STA/CDC或全网络签核结论；10ns仿真时钟不是频率收敛证明。[历史Spec快照](<reference/NPU_Spec.md>)原样保留，当前接口与位宽以本说明为准。

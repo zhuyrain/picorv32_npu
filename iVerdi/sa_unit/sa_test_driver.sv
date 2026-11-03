@@ -3,7 +3,9 @@
 // inspecting PE state. A fixed-latency token pipe and independent FIFO model
 // check that backpressure never freezes array progress or loses credits.
 module sa_test_driver #(
-    parameter ROWS=8, COLS=8, PSUM_WIDTH=32, ACC_ROWS=8,
+    parameter ROWS=8, COLS=8,
+    parameter PE_PSUM_WIDTH=$clog2(ROWS*16384+1)+1,
+    parameter ACC_WIDTH=48, ACC_ROWS=8,
     parameter ACC_ADDR_WIDTH=(ACC_ROWS<=1 ? 1 : $clog2(ACC_ROWS)),
     parameter FIFO_DEPTH=2*(ROWS+COLS),
     parameter FIFO_COUNT_WIDTH=$clog2(FIFO_DEPTH+1),
@@ -26,14 +28,14 @@ module sa_test_driver #(
     reg [ACC_ADDR_WIDTH-1:0] in_acc_addr='0;
     wire out_valid,out_bank;
     reg out_ready=1'b1;
-    wire [COLS*32-1:0] out_psum;
+    wire [COLS*ACC_WIDTH-1:0] out_psum;
     wire [COLS-1:0] out_col_mask;
     wire [ACC_ADDR_WIDTH-1:0] out_acc_addr;
     wire [1:0] out_error;
     wire almost_full,acc_busy,fault;
     wire [FIFO_COUNT_WIDTH-1:0] fifo_level,reserved_level;
     integer input_tag=0;
-    sa #(.ROWS(ROWS),.COLS(COLS),.PSUM_WIDTH(PSUM_WIDTH),.ACC_ROWS(ACC_ROWS),
+    sa #(.ROWS(ROWS),.COLS(COLS),.PE_PSUM_WIDTH(PE_PSUM_WIDTH),.ACC_WIDTH(ACC_WIDTH),.ACC_ROWS(ACC_ROWS),
          .ACC_ADDR_WIDTH(ACC_ADDR_WIDTH),.FIFO_DEPTH(FIFO_DEPTH),
          .FIFO_COUNT_WIDTH(FIFO_COUNT_WIDTH)) dut (
         .clk(clk),.rst_n(rst_n),.flush(flush),
@@ -57,15 +59,15 @@ module sa_test_driver #(
     reg [COLS-1:0] pipe_mask[0:L-1];
     reg [ACC_ADDR_WIDTH-1:0] pipe_addr[0:L-1];
     reg [1:0] pipe_error[0:L-1];
-    reg [COLS*32-1:0] pipe_data[0:L-1];
+    reg [COLS*ACC_WIDTH-1:0] pipe_data[0:L-1];
     integer pipe_tag[0:L-1];
-    reg [COLS*32-1:0] q_data[0:MAX_TAGS-1];
+    reg [COLS*ACC_WIDTH-1:0] q_data[0:MAX_TAGS-1];
     reg [COLS-1:0] q_mask[0:MAX_TAGS-1];
     reg [ACC_ADDR_WIDTH-1:0] q_addr[0:MAX_TAGS-1];
     reg [1:0] q_error[0:MAX_TAGS-1];
     reg q_bank[0:MAX_TAGS-1];
     integer q_tag[0:MAX_TAGS-1];
-    reg [COLS*32-1:0] result[0:MAX_TAGS-1];
+    reg [COLS*ACC_WIDTH-1:0] result[0:MAX_TAGS-1];
     reg [1:0] result_error[0:MAX_TAGS-1];
     reg received[0:MAX_TAGS-1];
     integer qr=0,qw=0,reserved_model=0;
@@ -80,9 +82,11 @@ module sa_test_driver #(
     integer loading_count=0,ack_remaining=0;
     integer i,j,k,addr;
     longint signed total,partial;
-    reg [COLS*32-1:0] new_data;
+    reg [COLS*ACC_WIDTH-1:0] new_data;
+    localparam signed [63:0] ACC_MAX=(64'sd1 << (ACC_WIDTH-1))-64'sd1;
+    localparam signed [63:0] ACC_MIN=-(64'sd1 << (ACC_WIDTH-1));
     initial begin
-        if(PSUM_WIDTH!=32) $fatal(1,"SA TB requires PSUM_WIDTH=32");
+        if(ACC_WIDTH<32 || ACC_WIDTH>63) $fatal(1,"SA integer reference supports ACC_WIDTH=32..63");
         rng=$urandom;
         if(rng=='0) rng=32'hc001d00d;
         for(i=0;i<L;i=i+1) pipe_valid[i]=1'b0;
@@ -170,10 +174,10 @@ module sa_test_driver #(
                     for(k=0;k<ROWS;k=k+1)
                         partial=partial+64'($signed(in_act[k*8+:8]))*64'(weights[in_bank][k][j]);
                     total=in_col_mask[j] ? context_value[addr][j]+partial : 64'sd0;
-                    if(in_col_mask[j] && (total>64'sd2147483647 || total< -64'sd2147483648) && error_work==2'b00)
+                    if(in_col_mask[j] && (total>ACC_MAX || total<ACC_MIN) && error_work==2'b00)
                         error_work=2'b10;
                     context_value[addr][j]=total;
-                    new_data[j*32+:32]=total[31:0];
+                    new_data[j*ACC_WIDTH+:ACC_WIDTH]=total[ACC_WIDTH-1:0];
                 end
                 context_error[addr]=error_work;active[addr]=!in_last;
                 if(error_work!=2'b00) new_data='0;

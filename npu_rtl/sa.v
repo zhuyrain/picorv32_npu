@@ -11,7 +11,9 @@
 module sa #(
     parameter ROWS = 8,
     parameter COLS = 8,
-    parameter PSUM_WIDTH = 32,
+    // Positive endpoint needs an extra bit when ROWS is a power of two.
+    parameter PE_PSUM_WIDTH = $clog2(ROWS * 16384 + 1) + 1,
+    parameter ACC_WIDTH = 48,
     parameter ROW_ADDR_WIDTH = (ROWS <= 1 ? 1 : $clog2(ROWS)),
     parameter ACC_ROWS = 8,
     parameter ACC_ADDR_WIDTH = (ACC_ROWS <= 1 ? 1 : $clog2(ACC_ROWS)),
@@ -38,7 +40,7 @@ module sa #(
     output wire out_valid,
     input wire out_ready,
     output wire out_bank,
-    output wire [COLS*32-1:0] out_psum,
+    output wire [COLS*ACC_WIDTH-1:0] out_psum,
     output wire [COLS-1:0] out_col_mask,
     output wire [ACC_ADDR_WIDTH-1:0] out_acc_addr,
     output wire [1:0] out_error,
@@ -50,7 +52,7 @@ module sa #(
 );
     localparam ARRAY_LATENCY = ROWS+COLS-1;
     localparam LATENCY = ARRAY_LATENCY+1; // Includes south ACC/FIFO enqueue.
-    localparam RESULT_WIDTH = COLS*32+COLS+1+ACC_ADDR_WIDTH+2;
+    localparam RESULT_WIDTH = COLS*ACC_WIDTH+COLS+1+ACC_ADDR_WIDTH+2;
     reg [ARRAY_LATENCY-1:0] valid_pipe, bank_pipe, first_pipe, last_pipe;
     reg [COLS-1:0] mask_pipe [0:ARRAY_LATENCY-1];
     reg [ACC_ADDR_WIDTH-1:0] addr_pipe [0:ARRAY_LATENCY-1];
@@ -145,9 +147,10 @@ module sa #(
     wire [7:0] act_wire [0:ROWS-1][0:COLS];
     wire act_valid_wire [0:ROWS-1][0:COLS];
     wire act_bank_wire [0:ROWS-1][0:COLS];
-    wire [31:0] psum_wire [0:ROWS][0:COLS-1];
-    wire [31:0] aligned_psum [0:COLS-1];
-    wire [COLS*32-1:0] partial;
+    // Keep the entire mesh AND output deskew narrow; widen only at South.
+    wire [PE_PSUM_WIDTH-1:0] psum_wire [0:ROWS][0:COLS-1];
+    wire [PE_PSUM_WIDTH-1:0] aligned_psum [0:COLS-1];
+    wire [COLS*PE_PSUM_WIDTH-1:0] partial;
     genvar r,c;
     generate
         for (r=0;r<ROWS;r=r+1) begin : ROW
@@ -179,7 +182,8 @@ module sa #(
                 assign act_bank_wire[r][0] = bank[r-1];
             end
             for(c=0;c<COLS;c=c+1) begin : COL
-                pe #(.PSUM_WIDTH(32),.ROW_INDEX(r),.ROW_ADDR_WIDTH(ROW_ADDR_WIDTH)) u_pe (
+                pe #(.ROWS(ROWS),.PE_PSUM_WIDTH(PE_PSUM_WIDTH),
+                     .ROW_INDEX(r),.ROW_ADDR_WIDTH(ROW_ADDR_WIDTH)) u_pe (
                     .clk(clk),.rst_n(rst_n),.flush(flush),
                     .weight_valid_in(weight_valid_wire[r][c]),
                     .weight_bank_in(weight_bank_wire[r][c]),
@@ -212,12 +216,12 @@ module sa #(
             assign weight_bank_wire[0][c] = weight_bank;
             assign weight_row_wire[0][c] = packet_row;
             // Every K tile starts at zero; bias/history stay at SOUTH.
-            assign psum_wire[0][c] = 32'd0;
+            assign psum_wire[0][c] = '0;
             if(c==COLS-1) begin : RESULT_DIRECT
                 assign aligned_psum[c] = psum_wire[ROWS][c];
             end else begin : RESULT_DESKEW
                 localparam DELAY = COLS-1-c;
-                reg [31:0] data [0:DELAY-1];
+                reg [PE_PSUM_WIDTH-1:0] data [0:DELAY-1];
                 integer j;
                 always @(posedge clk or negedge rst_n) begin
                     if(!rst_n) begin for(j=0;j<DELAY;j=j+1) data[j]<='0; end
@@ -229,7 +233,7 @@ module sa #(
                 end
                 assign aligned_psum[c] = data[DELAY-1];
             end
-            assign partial[c*32 +: 32] = aligned_psum[c];
+            assign partial[c*PE_PSUM_WIDTH +: PE_PSUM_WIDTH] = aligned_psum[c];
 `ifdef SA_CHECKS
             always @(posedge clk) if(rst_n && !flush) begin
                 assert_load_control: assert (
@@ -243,9 +247,10 @@ module sa #(
     endgenerate
 
     wire emit_valid, fifo_push_ready, acc_fault, fifo_overflow;
-    wire [COLS*32-1:0] emit_data;
+    wire [COLS*ACC_WIDTH-1:0] emit_data;
     wire [1:0] emit_error;
-    sa_south_acc #(.COLS(COLS),.ACC_ROWS(ACC_ROWS),.ACC_ADDR_WIDTH(ACC_ADDR_WIDTH)) u_south_acc (
+    sa_south_acc #(.COLS(COLS),.ACC_ROWS(ACC_ROWS),.ACC_ADDR_WIDTH(ACC_ADDR_WIDTH),
+                   .PE_PSUM_WIDTH(PE_PSUM_WIDTH),.ACC_WIDTH(ACC_WIDTH)) u_south_acc (
         .clk(clk),.rst_n(rst_n),.flush(flush),
         .bias_we(bias_valid && bias_ready),.bias_data(bias_data),
         .in_valid(south_valid),.in_partial(partial),
@@ -279,12 +284,16 @@ module sa #(
         assert_load_ack: assert (!load_ack || (load_active && !load_sending))
             else $fatal(1,"Unexpected weight load completion");
     end
+`endif
+    // synopsys translate_off
     initial begin
-        if (ROWS<1 || ROWS>4096 || COLS<1 || PSUM_WIDTH!=32 || ACC_ROWS<1 ||
+        if (ROWS<1 || ROWS>4096 || COLS<1 || ACC_ROWS<1 ||
+            PE_PSUM_WIDTH<16 || PE_PSUM_WIDTH<$clog2(ROWS*16384+1)+1 ||
+            ACC_WIDTH<32 || ACC_WIDTH<PE_PSUM_WIDTH ||
             ROW_ADDR_WIDTH<1 || ACC_ADDR_WIDTH<1 || 2**ROW_ADDR_WIDTH<ROWS ||
             2**ACC_ADDR_WIDTH<ACC_ROWS || FIFO_DEPTH<LATENCY ||
             2**FIFO_COUNT_WIDTH<=FIFO_DEPTH)
             $fatal(1,"Invalid free-running SA profile parameters");
     end
-`endif
+    // synopsys translate_on
 endmodule
