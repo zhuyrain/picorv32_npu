@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/zhuyrain/CNN-CIFAR-10",
+  "commit": "7b2d27f9f65e3ae51a3a20b90ce88caa23aac898",
+  "files": {
+    "NPU_Spec.md": {
+      "url": "https://raw.githubusercontent.com/zhuyrain/CNN-CIFAR-10/7b2d27f9f65e3ae51a3a20b90ce88caa23aac898/docs/NPU_Spec.md",
+      "sha256": "129c3df112815936b4b0358efbe01580318f738f9fb79e43339498ac1ab00471"
+    },
+    "test_vector_hwc_im2col_tiles.h": {
+      "url": "https://raw.githubusercontent.com/zhuyrain/CNN-CIFAR-10/7b2d27f9f65e3ae51a3a20b90ce88caa23aac898/C/resnet/cpu/test_vector_hwc_im2col_tiles.h",
+      "sha256": "959e282310ae658411f587b93ccd8d09d0336e3ec3d6e16815b99157b70ae81d"
+    }
+  }
+}

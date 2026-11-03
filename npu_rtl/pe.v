@@ -1,159 +1,81 @@
 `timescale 1ns / 1ps
 
+// Weight-stationary PE. Exactly TWO INT8 weight registers, no weight RF,
+// rotating index or registered copy of the selected operand.
+// act/bank flow east; signed wide partial sums and their valid flow south.
+// One enabled edge performs one MAC. All compute state freezes on !advance;
+// an independent write can still preload a safe bank (interlocked by sa).
 module pe #(
-    // 物理层面上焊死的最大权重容量（支持第二层的 36 个，甚至可以改得更大）
-    parameter MAX_WEIGHTS = 36,
-    parameter MY_GROUP    = 0 //属于哪一个行组
+    parameter PSUM_WIDTH = 48
 )(
-    input  wire        clk,
-    input  wire        rst_n,
-    
-    // ==========================================
-    // 0. 动态配置接口
-    // ==========================================
-    // 当前网络层实际需要循环的权重数量 (例如第一层填 9，第二层填 36)
-    input  wire [7:0]  cfg_weight_num, 
-
-    // ==========================================
-    // 1. 控制与数据驱动令牌 (Tokens)
-    // ==========================================
-    // 【新增】：全局启动脉冲，用于清空 PE 内部的合法标志位
-    input  wire        npu_start_pulse_in,
-    output reg         npu_start_pulse_out,
-
-    input  wire        weight_en_in,
-    input  wire [3:0]  weight_group_in,
-    output reg         weight_en_out,
-    output reg  [3:0]  weight_group_out,
-    
-    // 横向数据流
-    input  wire        act_valid_in,   // 伴随激活值的数据有效令牌
-    output reg         act_valid_out,  // 传递给下一列
-    input  wire [7:0]  act_in,
-    output reg  [7:0]  act_out,
-    
-    // 纵向数据流 (权重的配置总线也属于纵向)
-    input  wire [31:0] weight_in,
-    output reg  [31:0] weight_out,
-    input  wire [31:0] psum_in,
-    output wire  [31:0] psum_out
+    input  wire clk,
+    input  wire rst_n,
+    input  wire flush,
+    input  wire advance,
+    input  wire weight_en,
+    input  wire weight_bank,
+    input  wire [7:0] weight_in,
+    input  wire [7:0] act_in,
+    input  wire act_valid_in,
+    input  wire act_bank_in,
+    output reg  [7:0] act_out,
+    output reg  act_valid_out,
+    output reg  act_bank_out,
+    input  wire [PSUM_WIDTH-1:0] psum_in,
+    input  wire psum_valid_in,
+    output reg  [PSUM_WIDTH-1:0] psum_out,
+    output reg  psum_valid_out
 );
+    reg signed [7:0] weight_ping;
+    reg signed [7:0] weight_pong;
+    wire signed [7:0] selected_weight = act_bank_in ? weight_pong : weight_ping;
+    wire mac_valid = act_valid_in && psum_valid_in;
+    // Explicit operand isolation and signed widening; never narrow a seed.
+    wire signed [7:0] operand_a = mac_valid ? $signed(act_in) : 8'sd0;
+    wire signed [7:0] operand_b = mac_valid ? selected_weight : 8'sd0;
+    wire signed [15:0] product = operand_a * operand_b;
+    wire signed [PSUM_WIDTH-1:0] product_wide =
+        {{(PSUM_WIDTH-16){product[15]}}, product};
 
-    // ==========================================
-    // 内部存储与状态 (Local Register File)
-    // ==========================================
-    // 1. PE 内部的局部权重寄存器堆 (Cow Buffer)
-    reg signed [7:0] weight_buf [0:MAX_WEIGHTS-1];
-    
-    // 2. 读写指针完全分离！
-    reg [7:0] wr_weight_idx; // 写指针：由 weight_en 驱动
-    reg [7:0] rd_weight_idx; // 读指针：由 act_valid 驱动
-
-    // 3. 【新增】：合法权重标志位 (Dirty Bit / Valid Flag)
-    reg weight_valid_flag;
-
-    // ==========================================
-    // 块 1：控制、配置与横向数据透传 (Control & Horizontal Flow)
-    // ==========================================
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin  
-            act_valid_out       <= 1'b0;
-            weight_en_out       <= 1'b0;
-            npu_start_pulse_out <= 1'b0;
-            weight_valid_flag   <= 1'b0; 
-            wr_weight_idx       <= 8'd0; 
-            rd_weight_idx       <= 8'd0; 
-        end else begin
-            // 1. 横向传递保持 1 拍的相对延迟，维持脉动阵列横向波前
-            act_out       <= act_in;
-            act_valid_out <= act_valid_in;
-
-            // 2. 纵向配置令牌传递
-            weight_en_out       <= weight_en_in;
-            weight_group_out    <= weight_group_in;
-            npu_start_pulse_out <= npu_start_pulse_in; 
-            
-            // 3. 权重合法性标志位更新
-            if (npu_start_pulse_in) begin
-                weight_valid_flag <= 1'b0;
-            end else if (weight_en_in && (weight_group_in == MY_GROUP)) begin
-                weight_valid_flag <= 1'b1;
-            end
-            
-            // 4. 写指针与权重缓存更新
-            if (weight_en_in) begin
-                if (weight_group_in == MY_GROUP) begin
-                    // 将低 8 位写进 Cow Buffer
-                    weight_buf[wr_weight_idx] <= $signed(weight_in[7:0]);
-                    weight_out <= {8'd0, weight_in[31:8]};
-                    
-                    // 写指针根据外部配置的动态边界进行环形自增
-                    if (wr_weight_idx == cfg_weight_num - 1)
-                        wr_weight_idx <= 8'd0;
-                    else
-                        wr_weight_idx <= wr_weight_idx + 8'd1;
-                end else begin
-                    weight_out <= weight_in;
-                end
-            end 
-            
-            // 5. 读指针更新 (受 act_valid 驱动)
-            if (act_valid_in) begin
-                if (rd_weight_idx == cfg_weight_num - 1)
-                    rd_weight_idx <= 8'd0;
-                else
-                    rd_weight_idx <= rd_weight_idx + 8'd1;
-            end
+    // No data reset is required: SA invalidates both bank-loaded bitmaps.
+    always @(posedge clk) begin
+        if (rst_n && !flush && weight_en) begin
+            if (weight_bank) weight_pong <= $signed(weight_in);
+            else             weight_ping <= $signed(weight_in);
         end
     end
-
-    // ==========================================
-    // 块 2：MAC 纵向计算流 (Vertical Computation Flow)
-    // ==========================================
-    
-    // --- 流水线寄存器声明 ---
-    reg signed [7:0]  stg1_act;
-    reg signed [7:0]  stg1_weight;
-    reg               stg1_valid; 
-
-    reg signed [15:0] stg2_mult; 
-    (* use_dsp = "yes" *) 
-    reg signed [31:0] psum_out_reg;
-    reg               stg2_valid;
-
-    wire signed [7:0]  act_in_s  = $signed(act_in);
-    wire signed [31:0] psum_in_s = $signed(psum_in);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            stg1_valid  <= 1'b0;
-            stg2_valid  <= 1'b0;
-        end else begin
-            stg1_valid  <= act_valid_in;
-            stg2_valid  <= stg1_valid;
+            act_out <= '0;
+            act_valid_out <= '0;
+            act_bank_out <= '0;
+            psum_out <= '0;
+            psum_valid_out <= '0;
+        end else if (flush) begin
+            act_out <= '0;
+            act_valid_out <= '0;
+            act_bank_out <= '0;
+            psum_out <= '0;
+            psum_valid_out <= '0;
+        end else if (advance) begin
+            act_out <= act_valid_in ? act_in : 8'd0;
+            act_valid_out <= act_valid_in;
+            act_bank_out <= act_bank_in;
+            psum_valid_out <= mac_valid;
+            psum_out <= mac_valid ? ($signed(psum_in) + product_wide) : {PSUM_WIDTH{1'b0}};
         end
     end
 
-    always @(posedge clk) begin 
-        // --- STAGE 1: 输入端操作数隔离 (Operand Isolation) ---
-        // 巧妙应用你的低功耗思路：只要无有效令牌，直接赋 0。
-        // 这瞬间切断了后续所有的逻辑翻转毛刺，省下海量动态功耗！
-        stg1_act    <= act_valid_in ? act_in_s : 8'sd0;
-        stg1_weight <= weight_valid_flag ? weight_buf[rd_weight_idx] : 8'sd0; 
-        
-        // --- STAGE 2: 纯净乘法器层 ---
-        // 8位 * 8位 = 16位。绝不超载。
-        // 如果 Stage 1 是 0，这里必然是 0，乘法器完全不翻转。
-        stg2_mult   <= stg1_act * stg1_weight; 
-        
-        // --- STAGE 3: 纯净累加器层 (P = M + C) ---
-        // 抛弃所有 MUX 和 if-else，写出 Vivado 模式匹配 100% 认识的纯加法拓扑。
-        // 有效时：正常累加 (M + C)
-        // 无效时：stg2_mult 必为 0，自然等效于透传 (0 + C)
-        psum_out_reg <= $signed(stg2_mult) + psum_in_s;
+`ifdef SA_CHECKS
+    always @(posedge clk) begin
+        if (rst_n && !flush && advance) begin
+            assert_wavefront: assert (act_valid_in == psum_valid_in)
+                else $fatal(1, "PE act/psum wavefront mismatch");
+        end
     end
-
-    // 零成本格式化输出
-    assign psum_out = $unsigned(psum_out_reg);
-
+    initial begin
+        if (PSUM_WIDTH < 16) $fatal(1, "PSUM_WIDTH must be >=16");
+    end
+`endif
 endmodule
