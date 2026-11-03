@@ -8,9 +8,9 @@ SEEDS ?= 1 7 42
 RUN_DIR := $(BUILD)/$(TOP)$(if $(filter 1,$(COV)),_cov)$(if $(filter 1,$(FSDB)),_fsdb)
 VCS ?= $(if $(VCS_HOME),$(VCS_HOME)/bin/vcs,vcs)
 VERDI ?= $(if $(VERDI_HOME),$(VERDI_HOME)/bin/verdi,verdi)
-RTL := $(ROOT)/npu_rtl/pe.v $(ROOT)/npu_rtl/sa.v
-TB := $(if $(filter tb_sa_shapes,$(TOP)),,$(THIS_DIR)/sa_test_driver.sv) \
-      $(THIS_DIR)/$(TOP).sv
+RTL := $(ROOT)/npu_rtl/pe.v $(ROOT)/npu_rtl/sa_result_fifo.v \
+       $(ROOT)/npu_rtl/sa_south_acc.v $(ROOT)/npu_rtl/sa.v
+TB := $(THIS_DIR)/sa_test_driver.sv $(THIS_DIR)/$(TOP).sv
 VCS_FLAGS := -full64 -sverilog -timescale=1ns/1ps +define+SA_CHECKS \
              -debug_access+all -kdb -lca +lint=all -j4
 ifeq ($(COV),1)
