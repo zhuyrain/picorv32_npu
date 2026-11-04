@@ -37,7 +37,7 @@ sim: vectors
 test: compile
 	$(MAKE) -C $(THIS_DIR) sim TOP=$(TOP) SEED=$(SEED)
 regress:
-	@set -e; for top in tb_sa tb_sa_protocol tb_sa_protocol32 tb_sa_shapes tb_sa_widths tb_sa_south_widths; do \
+	@set -e; for top in tb_sa tb_sa_protocol tb_sa_protocol32 tb_sa_shapes tb_sa_widths tb_sa_south_widths tb_sa_natural_drain tb_pe_natural_drain; do \
 	    $(MAKE) -C $(THIS_DIR) compile TOP=$$top; \
 	    for seed in $(SEEDS); do \
 	        $(MAKE) -C $(THIS_DIR) sim TOP=$$top SEED=$$seed; \

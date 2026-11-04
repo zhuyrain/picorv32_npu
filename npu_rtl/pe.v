@@ -3,7 +3,9 @@
 // Free-running WS PE: two stationary INT8 weights plus ONE transit byte.
 // Weight data AND control arrive only from the north neighbour. A packet's
 // target row captures its byte; the registered packet continues south to ACK.
-// No global weight enable, advance, ready, or vertical valid exists here.
+// No flush, global weight enable, advance, ready, or vertical valid exists here.
+// Layer abort is an EDGE operation: stop activation injection and mask South.
+// Already accepted activation AND weight tokens always drain through this PE.
 module pe #(
     parameter ROWS = 8,
     // +1 INSIDE clog2 includes the positive endpoint ROWS*(-128)*(-128).
@@ -11,7 +13,7 @@ module pe #(
     parameter ROW_INDEX = 0,
     parameter ROW_ADDR_WIDTH = (ROWS <= 1 ? 1 : $clog2(ROWS))
 )(
-    input wire clk, rst_n, flush,
+    input wire clk, rst_n,
     input wire weight_valid_in,
     input wire weight_bank_in,
     input wire [ROW_ADDR_WIDTH-1:0] weight_row_in,
@@ -38,7 +40,7 @@ module pe #(
 
     // At most three weight bytes per PE. No RF or selected-weight register.
     always @(posedge clk) begin
-        if (rst_n && !flush && weight_valid_in) begin
+        if (rst_n && weight_valid_in) begin
             weight_out <= weight_in;
             if (weight_row_in == ROW_ADDR_WIDTH'(ROW_INDEX)) begin
                 if (weight_bank_in) weight_pong <= $signed(weight_in);
@@ -48,14 +50,6 @@ module pe #(
     end
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            weight_valid_out <= 1'b0;
-            weight_bank_out <= 1'b0;
-            weight_row_out <= '0;
-            act_out <= '0;
-            act_valid_out <= 1'b0;
-            act_bank_out <= 1'b0;
-            psum_out <= '0;
-        end else if (flush) begin
             weight_valid_out <= 1'b0;
             weight_bank_out <= 1'b0;
             weight_row_out <= '0;

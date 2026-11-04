@@ -1,10 +1,11 @@
-# SA：窄位宽阵列与独立宽位累加器
+# SA：自然排空核心与独立宽位累加器
 
 ## 1. 版本与范围
 
 - `800e46f`：初版（48位阵列、全局stall、顶部seed）。
 - **`d48d9c2`：按用户要求先提交的重构基线**（级联权重、自由流水、32位南侧本地ACC、结果FIFO）。
-- 当前未提交改动：解耦 `PE_PSUM_WIDTH` 与 `ACC_WIDTH`，默认8×8为 **19位阵列 / 48位南侧ACC**。
+- **`0f43ecb`：本轮先提交的位宽解耦基线**，message 为“解耦阵列内部部分和与南侧累加位宽”；默认8×8为 **19位阵列 / 48位南侧ACC**。
+- 当前未提交改动：移除PE、行skew、列deskew的flush，核心只靠原有valid自由流动；层中止由边缘停止注入与南侧周期掩码完成。
 
 实现位于 [PE](<../../npu_rtl/pe.v>)、[SA](<../../npu_rtl/sa.v>)、[南侧ACC](<../../npu_rtl/sa_south_acc.v>) 与 [结果FIFO](<../../npu_rtl/sa_result_fifo.v>)。这里只验证计算子系统，不是完整DMA/命令队列NPU。
 
@@ -77,7 +78,13 @@ A -> 行skew -> WS mesh [PE_PSUM_WIDTH] -> 列deskew [PE_PSUM_WIDTH]
 
 ### 自由流水与credit
 
-PE没有 `advance` 或纵向valid链，仅单一act-valid。所有skew、mesh、deskew每拍前进；改变位宽不改变时序：`L_array=ROWS+COLS-1`，输入边沿n接受，n+L_array−1后aligned partial有效，n+L_array边沿南侧提交/入FIFO，最早再下一边沿输出握手。默认15级阵列＋1级南侧。
+PE没有 `flush`、`advance` 或纵向valid链，也没有增加任何控制信号替代flush。行skew、mesh、列deskew只有全局reset初始化，之后每拍推进，已经在途的激活/权重数据与valid不会因层中止而清零。`L_array=ROWS+COLS-1`，输入边沿n接受，n+L_array−1后aligned partial有效，n+L_array边沿南侧提交/入FIFO，最早再下一边沿输出握手。默认15级阵列＋1级南侧。
+
+**自然排空的取消在边缘执行：** 顶层原有flush分支仍清逻辑token metadata、credit与load会话；南侧ACC/FIFO自身flush源代码保持不变。边缘另用两个倒计数：每个flush采样沿分别重置计算隔离期L与权重隔离期R；flush解除后按实际时钟递减。计算隔离期内 `in_ready/bias_ready=0`、`south_valid=0`，故旧核心partial即使继续流动也不更新ACC、FIFO、fault或credit。权重隔离期内不接收新tile，并丢弃旧raw ACK，防止取消的包把bank标回ready或错误结束新load。
+
+这两个计数器只在顶层边缘使用，**没有连接任何PE/skew/deskew的使能、复位或替代flush端口**。原有act-valid/bank和weight-valid/bank/target逐跳传递方式不变。
+
+若最后一次flush采样在F：新计算最早在F+L+1握手，新权重最早在F+R+1握手。R<L时，新权重可在计算排空窗口尚未结束时装载；旧被取消计算可能读到新权重，但旧结果全被南侧屏蔽，不会污染新上下文。持续或再次flush会重新计时；只有 `rst_n` 真正清核心流水valid。
 
 FIFO深度单位为整行向量，默认2*(ROWS+COLS)，必须≥ROWS+COLS；支持非2幂回绕。额度守恒：
 
@@ -98,7 +105,9 @@ non-final留在本地ACC，释放预留；final只把预留转到FIFO，退休�
 
 `bias_valid/ready`配置南侧INT32列向量；只有阵列无在途、无开放ACC上下文时可写，同拍计算优先。已完成FIFO结果不妨碍改bias。`out_bank/out_acc_addr/out_col_mask`来自final输入，阻塞时FIFO头稳定。非法ACC地址不接受（ready0）。
 
-flush禁止所有握手，清阵列/FIFO/context/fault，保留完整权重组和bias；中断load的bank无效。reset另使全部bank无效并清bias为0。
+flush在边缘禁止外部握手；被时钟采样后清逻辑metadata/FIFO/context/fault/credit，不清物理阵列。完整权重组和bias保留，中断load的bank无效；核心旧包自然排空但不再产生有效结果。reset另使全部bank无效并清bias为0，同时初始化核心流水。
+
+**保留顶层flush的明确限制：** 修复的是PE内部错误地用flush阻断已接受权重的capture/转发，不是把外部load事务改成跨flush存活。顶层原FSM仍取消未完成会话，因此部分或全发齐但未ACK的tile必须等待旧包排空后从头完整重载；不能看到某些PE实际写成功就将半tile用于新计算。若未来要让完整预载事务跨层中止存活，需要另定DMA/load取消边界，不在本次精简中强改。
 
 ## 4. 验证与复现
 
@@ -112,9 +121,22 @@ make -C iVerdi/sa_unit wave FSDB=1
 
 [共享checker](<sa_test_driver.sv>)使用独立int64数学模型与固定时钟pipe/FIFO，检查credit、顺序、数据、错误、bank ACK和反压稳定，不读取DUT内存构造期望。当前验证覆盖ACC32/40/48/56，checker支持至63位，不因此限制RTL可配置上限。
 
-[主向量测试](<tb_sa.sv>)覆盖全部1856个最终元素、616个K行token/232个最终向量，K27按8/8/8/3、先污染后尾零，无外部部分和反馈。[协议测试](<tb_sa_protocol.sv>)保留串行装载、bias一次、多槽/同槽RMW、满FIFO排空、上下文错与flush/reset，并将默认48位下的INT32越界抵消改为成功；[32位配置测试](<tb_sa_protocol32.sv>)单独保留ACC32溢出poison验收。[参数测试](<tb_sa_shapes.sv>)包含最小/非2幂FIFO与独立PE24/ACC40配置。附加位宽/南侧边界测试检查-128×-128正端点、负partial/负bias扩展及真正ACC位宽溢出。具体顶层和实际结果见[验证报告](<RESULTS.md>)。
+[主向量测试](<tb_sa.sv>)覆盖全部1856个最终元素、616个K行token/232个最终向量，K27按8/8/8/3、先污染后尾零，无外部部分和反馈。[协议测试](<tb_sa_protocol.sv>)保留串行装载、bias一次、多槽/同槽RMW、满FIFO排空、上下文错与flush/reset，并将默认48位下的INT32越界抵消改为成功；[32位配置测试](<tb_sa_protocol32.sv>)单独保留ACC32溢出poison验收。[参数测试](<tb_sa_shapes.sv>)包含最小/非2幂FIFO与独立PE24/ACC40配置。附加位宽/南侧边界测试检查-128×-128正端点、负partial/负bias扩展及真正ACC位宽溢出。
+
+新增[自然排空测试](<tb_sa_natural_drain.sv>)：8×8、1×3、1×1；独立物理历史只随reset清空，不随flush清空。逐跳观察实际act/weight数据与valid、row skew/列deskew和本地PING/PONG捕获，验证已经接受的旧包真的继续流动，而不只是输出被丢弃。覆盖旧FIFO取消、并行预载中长flush、单拍中止旧ACK、重复flush重新计时、R<L时提前恢复weight、新计算/bias恢复及无ghost/fault/credit副作用。
+
+新增[纯PE测试](<tb_pe_natural_drain.sv>)：实例接口无flush/替代控制，控制器shadow-abort期间持续发正常激活与权重valid，独立检查MAC、权重捕获/转发及两bank读写并行。shared checker另独立检查L/R恢复窗口。所有检查/超时使用非零失败退出。
+
+```sh
+make -C iVerdi/sa_unit test TOP=tb_sa_natural_drain FSDB=1
+make -C iVerdi/sa_unit wave TOP=tb_sa_natural_drain FSDB=1
+```
+
+完整regress现包含8个顶层、各seed 1/7/42。具体运行统计及日志见[验证报告](<RESULTS.md>)。
 
 ## 5. PPA取舍与尚未集成
+
+直接删PE flush、却不处理旧partial/旧ACK是不安全的：会污染南侧上下文或使bank_ready错误复活。本版保留边缘取消/隔离，不用新的全局kill信号替代flush。固定L/R恢复窗口偏保守，持续flush即使已经物理排空，也在解除后重新等待；这是简化边界证明换恢复气泡，不宣称最短中止延迟。阵列和边缘必须处于同一持续运行的时钟；未来若加独立门控/CDC，不能让边缘倒计数前进而核心停止，须重新建立排空契约。
 
 默认PE/deskew从32位降为19位，但ACC从32位升48位，FIFO也随输出变宽；这是把宽数值状态集中在边缘，不保证总FF面积或功耗下降。权重转发与FIFO也有面积/装载延迟成本。自由运行减少全局enable扇出，却不自动减少bubble期翻转；南侧读mux＋48位加法＋FIFO写可能成为时序瓶颈，必须综合/布局布线后判断。
 

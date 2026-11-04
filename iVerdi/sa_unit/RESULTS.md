@@ -1,12 +1,16 @@
-# 独立 PE/ACC 位宽验证 — 2026-11-03
+# 自然排空核心验证 — 2026-11-03
 
-## 1. 已完成的提交与本轮改动
+## 1. 提交与改动范围
 
-按用户要求，**先将上一轮工作区提交为 `d48d9c2`**：`重构 SA/PE：级联权重加载、自由流水及南侧本地累加`。该提交保存32位阵列/32位南侧版本及其既有验证结果。
+按用户要求，**先将位宽解耦工作区提交为 `0f43ecb`**，message：`解耦阵列内部部分和与南侧累加位宽`。该提交保存上一版及其18场验证结果。
 
-随后修改 [PE](<../../npu_rtl/pe.v>)、[SA](<../../npu_rtl/sa.v>) 和 [南侧ACC](<../../npu_rtl/sa_south_acc.v>)，解耦 `PE_PSUM_WIDTH` / `ACC_WIDTH`。本轮位宽改动仍保留在工作区，未额外提交或推送。参考向量与 [来源manifest](<reference/manifest.json>) 未改。
+随后仅对 [PE](<../../npu_rtl/pe.v>) 和 [SA](<../../npu_rtl/sa.v>) 的核心/边缘控制作自然排空改造，新增/更新验证与文档。本轮自然排空改动尚未再次提交或推送。
 
-默认8×8：mesh/deskew为19位，南侧history/FIFO/output为48位，bias仍INT32。安全公式使用 `$clog2(ROWS*16384+1)+1`：原式在ROWS为2幂时少1位（8×(-128)×(-128)=131072，18位signed无法表示）。推导、参数范围与接口见 [README](<README.md>)。
+- PE没有flush端口、flush流水分支或权重写入的 `!flush` 条件，也没有增加kill/epoch等替代PE控制。
+- 行skew、所有PE、列deskew只由reset初始化；已经接受的act/weight数据和valid每拍继续前进。
+- SA顶层原有metadata/credit/load会话flush保留；新增边缘L周期计算隔离与R周期旧权重ACK隔离，计数器不连接核心寄存器enable/reset。
+- **[南侧ACC](<../../npu_rtl/sa_south_acc.v>) 与 [结果FIFO](<../../npu_rtl/sa_result_fifo.v>) 源码相对 `0f43ecb` 无任何改动**，用Git diff检查确认；其既有flush原样保留。
+- PE_PSUM_WIDTH / ACC_WIDTH保持独立，默认8×8为19/48，INT32 bias与宽累加语义不变。[来源向量manifest](<reference/manifest.json>)及参考数据也未修改。
 
 ## 2. 实际执行
 
@@ -15,70 +19,65 @@
 ```sh
 make -C iVerdi/sa_unit regress
 make -C iVerdi/sa_unit test FSDB=1
+make -C iVerdi/sa_unit test TOP=tb_sa_natural_drain FSDB=1
 ```
 
-六个顶层，各运行seed=1/7/42，共 **18场回归全部PASS、退出码0**；另有一场默认19/48配置FSDB主向量仿真，通过。六个顶层是主向量、默认ACC48协议、ACC32协议、形状/FIFO、独立mesh位宽和独立南侧边界。
+八个顶层各seed=1/7/42，**24场回归全部PASS、退出码0**。另有主向量与自然排空两个FSDB仿真，均PASS、退出码0。`git diff --check`通过。
 
-### 黄金向量
+### 原有功能/位宽回归
 
-| case | M×K×N | 元素/seed | 三个seed |
-|---|---|---:|---|
-| 1 | 32×32×16 | 512 | PASS |
-| 2 | 32×27×16 | 512 | PASS |
-| 3 | 32×8×16 | 512 | PASS |
-| 4 | 32×8×8 | 256 | PASS |
-| 5 | 8×8×8 | 64 | PASS |
+六个既有顶层的18场仍全部通过：
 
-每seed全部1856个最终元素一致，接受616个K行token、输出232个final向量；384个non-final更新在南侧本地完成，无顶部部分和反馈。K27按8/8/8/3并先污染权重再补零；case3–5输入全1。Python任意精度GEMM也重算全部黄金值。
+- 五组GEMM每seed全部1856个最终元素一致，616个K行token、232个final向量；K27按8/8/8/3并污染后补零，case3–5激活全1。没有部分和反馈输入。
+- ACC48协议与ACC32协议各三seed：每场111个输入、96个最终输出，flush/reset取消2个未退休输出；credit满额阻塞5周期，消费者阻塞时仍有南侧提交48/43/46次。
+- ACC48允许越INT32后抵消成功；ACC32真正溢出仍poison；40/48/56位ACC真实上下界及±1溢出全部通过。
+- 独立PE16/17/19/24/32与ACC40/48/56组合、-128×-128正端点、负partial/负bias符号扩展、完整宽FIFO输出全部通过。
+- 1×1/FIFO2、1×8/FIFO9、8×1/FIFO9、3×5/FIFO8（PE24/ACC40）、8×8/FIFO17及3槽非法地址检查全部通过。
 
-计算/装载重叠写握手分别394/381/391；输出反压周期分别105/105/143。该计数不是实测系统SRAM流量或性能加速比。
+### 新增SA自然排空定向测试
 
-### 默认48位与显式32位协议
+[自然排空TB](<tb_sa_natural_drain.sv>)有一个独立物理历史模型：它只在reset清空，**不在flush清空**；期望由外部成功握手的输入包计算。层次观察仅用来对比实际传播/驻留捕获，不用DUT内存值构造数学期望，也没有force修改状态。逻辑checker则按flush取消任务，并独立计时L/R窗口。
 
-两种ACC配置的三个seed都PASS；每场111个输入、96个最终输出，明确flush/reset丢弃2个未退休向量。保留加载ACK/bank保护、bias一次、多槽与同槽连续更新、长时间消费者阻塞、满FIFO/credit、在途持续排空、上下文错误和flush/reset检查。
+三个seed中各配置均PASS：
 
-- **ACC48**：INT32正/负越界不置fault，后续反向K块抵消成功，输出非零bias；合法超过INT32的最终结果可保持全48位。
-- **ACC32**：相同位宽限制下的真正signed32溢出报error2、poison至last并返回0；后续抵消不能伪造成功。
-- 每seed有5个credit满额阻塞周期；消费者不ready时南侧仍提交48/43/46次。mesh没有恢复全局冻结。
+| 配置 | 中止期间继续经过PE的act观察次数 | 保留下来的aligned lane观察 | flush高电平期间本地weight捕获 | 计算隔离期内新weight握手 |
+|---|---:|---:|---:|---:|
+| 8×8 | 63 | 8 | 8 | 3 |
+| 1×3 | 2 | 3 | 0 | 1 |
+| 1×1 | 0 | 0 | 0 | 0 |
 
-### 独立mesh/ACC宽度与极端值
+1×1没有剩余后续PE级需要跨flush传播，因此相应次数为0是预期边界；该配置仍验证flush与旧ACK/South提交同沿取消、窗口恢复及后续计算。
 
-[位宽测试](<tb_sa_widths.sv>)的五个并行实例，在三个seed下全部PASS：
+定向覆盖包括：
 
-| ROWS×COLS | PE_PSUM_WIDTH | ACC_WIDTH | 检查要点 |
-|---|---:|---:|---|
-| 1×2 | 16（自动） | 48 | +16384正端点与负符号扩展 |
-| 3×3 | 17（自动） | 40 | 非2幂行数的最小宽度 |
-| 8×3 | 19（自动） | 48 | +131072正端点，原18位表达式会失败 |
-| 8×2 | 24（覆盖） | 56 | 两参数真正独立 |
-| 8×3 | 32（覆盖） | 48 | 扩大内部宽度不改变边缘配置 |
+1. 同沿接受计算与另一bank权重，再保持flush多拍；逐PE act/bank/valid、逐hop weight data/valid/bank/target、row skew与列deskew都继续走，不被清零。
+2. flush高电平期间目标PE驻留PING/PONG实际完成捕获，修复原PE误抑制写入的问题。
+3. 旧排队FIFO结果取消，旧核心结果不更新ACC/FIFO/fault/credit，不出现ghost输出或计数下溢。
+4. 未完成load仍按顶层旧语义取消，旧raw ACK不能恢复bank_ready；完整发齐但待ACK阶段的单拍flush、短gap后的重复flush都安全。
+5. R<L时权重窗口先开放，可在计算仍隔离时开始新tile；没有把compute窗口错误地用来吞新load的合法ACK。
+6. 完整重载后新计算正确，bias与未修改的完整bank保留，最终两bank可用且无fault/context残留。
 
-所有实例从正常权重/激活端口送入A=B=-128，以及负partial、INT32_MIN bias、宽中间抵消和超过INT32的最终输出；填满宽FIFO再随机反压排空，逐lane比较完整ACC位宽，不只检查低32位。
+### 新增纯PE定向测试
 
-### 真正宽ACC上下界
+[纯PE TB](<tb_pe_natural_drain.sv>)只实例化无flush接口的PE；shadow-abort是测试台/控制器状态，不接入PE，也没有替代控制。期间持续驱动原有weight/act valid并独立建模MAC和局部权重。
 
-[南侧独立测试](<tb_sa_south_widths.sv>)分别以40/48/56位运行，每实例7个final边界结果检查，三个seed全PASS：
+seed1/7/42均PASS：66个权重包，每场shadow-abort期间20次目标本地捕获、31次权重转发，MAC检查分别57/58/58次；验证两bank读写并行及目标不匹配时只转发不覆盖。
 
-- 精确MAX/MIN端点不误报；MAX+1、MIN−1真实溢出报error2。
-- 真正ACC溢出后再抵消仍poison。
-- INT32正/负越界可继续宽累加并抵消，不误报。
-- INT32 bias符号扩展正确，mask外端点不误触发溢出。
+## 3. 边缘语义、限制与可打开结果
 
-此单元测试将PE部分和接口宽度设为ACC宽，通过合法partial输入迅速抵达边界，**没有force或注入DUT内部状态**；它不是声称默认19位mesh单块就能产生48位峰值。
+顶层保留load会话flush意味着：本次修复“PE阻断已接受包”，**不代表外部load事务可跨flush成功完成**。半装或未ACK的tile必须排空后完整重载，不能根据物理写入已发生就冒充bank完整。详细取舍见 [README](<README.md>)。
 
-### 形状与FIFO
+最后flush采样沿F之后，保守窗口使新计算最早F+L+1、新权重最早F+R+1握手；flush持续或重入会重新计时。计数器只隔离边缘，核心不暂停。不把固定恢复气泡宣称成最短中止时延，也不把10ns仿真时钟当作PPA/Fmax签核。
 
-保留1×1/FIFO2、1×8/FIFO9、8×1/FIFO9、3×5/FIFO8、8×8/FIFO17，三个ACC槽及非法地址3检查全部PASS。其中3×5显式使用PE24/ACC40，其他为自动内部位宽/默认ACC48。覆盖最小容量、非2幂回绕、长阻塞自由排空、本地4轮K累加及flush保bias。
+- [完整24场回归日志](<build/regress.log>)。
+- [SA自然排空seed1](<build/tb_sa_natural_drain/sim_seed1.log>)、[纯PE seed1](<build/tb_pe_natural_drain/sim_seed1.log>)。
+- [自然排空FSDB运行记录](<build/tb_sa_natural_drain_fsdb/sim_seed1.log>)、[中止专用波形](<build/tb_sa_natural_drain_fsdb/sa.fsdb>)。
+- [主向量FSDB运行记录](<build/tb_sa_fsdb/sim_seed1.log>)、[主向量波形](<build/tb_sa_fsdb/sa.fsdb>)。
 
-## 3. 日志与边界
+```sh
+make -C iVerdi/sa_unit wave TOP=tb_sa_natural_drain FSDB=1
+```
 
-- [完整18场回归日志](<build/regress.log>)。
-- [默认48位协议](<build/tb_sa_protocol/sim_seed1.log>)、[32位协议](<build/tb_sa_protocol32/sim_seed1.log>)。
-- [独立位宽日志](<build/tb_sa_widths/sim_seed1.log>)、[南侧边界日志](<build/tb_sa_south_widths/sim_seed1.log>)。
-- [FSDB运行记录](<build/tb_sa_fsdb/sim_seed1.log>)、[更新后的波形](<build/tb_sa_fsdb/sa.fsdb>)，打开：`make -C iVerdi/sa_unit wave FSDB=1`。
+没有宽度/符号或未命名断言lint提示；保留TB事件等待空语句、LCA提醒和已有FSDB覆盖提醒。不等同专业静态lint/物理签核，未启动或声称人工逐信号浏览GUI。
 
-当前构建未出现RTL宽度/符号或未命名断言lint提示；保留正常TB事件等待 `Lint-[NS]`、工具LCA提醒及已有FSDB覆盖提醒。没有启动或声称人工逐信号浏览桌面GUI。
-
-48位对K≤4096、完整INT8与任意INT32 bias有充分数值裕量，但不是无限轮数保证，实际ACC溢出仍诊断。最终转INT32/量化需上层另行范围检查；本版输出不偷偷窄化。物理参数安全检查不依赖SA_CHECKS，但本报告没有额外列出非法参数的动态拒绝场次。
-
-旧SoC wrapper/DMA/完整命令ABI仍未集成；ACC为寄存器数组，若映射SRAM需重审RMW、端口和时序。没有PPA/Fmax/STA/CDC或全网络签核结论。
+旧SoC wrapper/DMA/完整命令ABI仍未集成；ACC仍是寄存器数组。独立门控/CDC会改变固定时钟排空前提，未来必须重新设计契约。没有全网络、PPA、STA或CDC签核结论。

@@ -53,6 +53,26 @@ module sa #(
     localparam ARRAY_LATENCY = ROWS+COLS-1;
     localparam LATENCY = ARRAY_LATENCY+1; // Includes south ACC/FIFO enqueue.
     localparam RESULT_WIDTH = COLS*ACC_WIDTH+COLS+1+ACC_ADDR_WIDTH+2;
+    localparam DRAIN_COUNT_WIDTH = $clog2(ARRAY_LATENCY+1);
+    localparam WEIGHT_DRAIN_COUNT_WIDTH = $clog2(ROWS+1);
+    // Edge-only quarantine: these counters never drive any PE/skew enable.
+    // Old physical tokens drain unchanged; South masks their side effects.
+    reg [DRAIN_COUNT_WIDTH-1:0] drain_count;
+    reg [WEIGHT_DRAIN_COUNT_WIDTH-1:0] weight_drain_count;
+    wire draining = (drain_count != '0);
+    wire weight_draining = (weight_drain_count != '0);
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin drain_count <= '0; weight_drain_count <= '0; end
+        else if (flush) begin
+            drain_count <= DRAIN_COUNT_WIDTH'(ARRAY_LATENCY);
+            weight_drain_count <= WEIGHT_DRAIN_COUNT_WIDTH'(ROWS);
+        end else begin
+            if (draining) drain_count <= drain_count - 1'b1;
+            if (weight_draining) weight_drain_count <= weight_drain_count - 1'b1;
+        end
+    end
+    // Edge result permissions/metadata, NOT the physical valid flowing inside
+    // the mesh. Flush may cancel these while every core token keeps moving.
     reg [ARRAY_LATENCY-1:0] valid_pipe, bank_pipe, first_pipe, last_pipe;
     reg [COLS-1:0] mask_pipe [0:ARRAY_LATENCY-1];
     reg [ACC_ADDR_WIDTH-1:0] addr_pipe [0:ARRAY_LATENCY-1];
@@ -62,25 +82,28 @@ module sa #(
     wire in_fire = in_valid && in_ready;
     wire weight_fire = weight_valid && weight_ready;
     wire out_fire = out_valid && out_ready;
-    wire south_valid = rst_n && !flush && valid_pipe[ARRAY_LATENCY-1];
+    wire south_valid = rst_n && !flush && !draining && valid_pipe[ARRAY_LATENCY-1];
     wire nonfinal_commit = south_valid && !last_pipe[ARRAY_LATENCY-1];
     wire [ROW_ADDR_WIDTH-1:0] packet_row = load_active ? load_row : ROW_ADDR_WIDTH'(ROWS-1);
     wire addr_ok = ({1'b0,in_acc_addr} < (ACC_ADDR_WIDTH+1)'(ACC_ROWS));
     assign bank_ready = loaded;
     assign almost_full = (reserved_level >= FIFO_COUNT_WIDTH'(FIFO_DEPTH));
-    assign in_ready = rst_n && !flush && !almost_full && loaded[in_bank] && addr_ok;
-    assign weight_ready = rst_n && !flush &&
+    assign in_ready = rst_n && !flush && !draining && !almost_full && loaded[in_bank] && addr_ok;
+    assign weight_ready = rst_n && !flush && !weight_draining &&
         (load_active ? (load_sending && weight_bank == load_bank) :
          (!bank_busy[weight_bank] && !(in_fire && in_bank == weight_bank)));
     // Bias is a south-local vector; cannot change while an input is pending
     // or a multi-pass context is open. Already queued output is independent.
-    assign bias_ready = rst_n && !flush && !(|valid_pipe) && !acc_busy && !in_fire;
+    assign bias_ready = rst_n && !flush && !draining && !(|valid_pipe) && !acc_busy && !in_fire;
 
     wire [7:0] weight_wire [0:ROWS][0:COLS-1];
     wire weight_valid_wire [0:ROWS][0:COLS-1];
     wire weight_bank_wire [0:ROWS][0:COLS-1];
     wire [ROW_ADDR_WIDTH-1:0] weight_row_wire [0:ROWS][0:COLS-1];
-    wire load_ack = weight_valid_wire[ROWS][0] && (weight_row_wire[ROWS][0] == '0);
+    wire load_ack_raw = weight_valid_wire[ROWS][0] && (weight_row_wire[ROWS][0] == '0);
+    // The top load FSM still aborts on flush. Let the physical chain drain,
+    // but never allow its cancelled ACK to resurrect/terminate a new session.
+    wire load_ack = rst_n && !flush && !weight_draining && load_ack_raw;
     integer p;
     always @* begin
         bank_busy = 2'b00;
@@ -166,9 +189,6 @@ module sa #(
                     if (!rst_n) begin
                         valid<='0; bank<='0;
                         for(j=0;j<r;j=j+1) data[j]<='0;
-                    end else if (flush) begin
-                        valid<='0; bank<='0;
-                        for(j=0;j<r;j=j+1) data[j]<='0;
                     end else begin
                         data[0] <= in_fire ? in_act[r*8 +: 8] : 8'd0;
                         valid[0] <= in_fire; bank[0] <= in_bank;
@@ -184,7 +204,7 @@ module sa #(
             for(c=0;c<COLS;c=c+1) begin : COL
                 pe #(.ROWS(ROWS),.PE_PSUM_WIDTH(PE_PSUM_WIDTH),
                      .ROW_INDEX(r),.ROW_ADDR_WIDTH(ROW_ADDR_WIDTH)) u_pe (
-                    .clk(clk),.rst_n(rst_n),.flush(flush),
+                    .clk(clk),.rst_n(rst_n),
                     .weight_valid_in(weight_valid_wire[r][c]),
                     .weight_bank_in(weight_bank_wire[r][c]),
                     .weight_row_in(weight_row_wire[r][c]),.weight_in(weight_wire[r][c]),
@@ -198,7 +218,7 @@ module sa #(
                 );
 `ifdef SA_CHECKS
                 if (r+c>0) begin : CHECK_WAVE
-                    always @(posedge clk) if (rst_n && !flush) begin
+                    always @(posedge clk) if (rst_n && !flush && !draining) begin
                         assert_act_wave: assert(act_valid_wire[r][c] == valid_pipe[r+c-1])
                             else $fatal(1,"Act wavefront mismatch r=%0d c=%0d",r,c);
                         if (act_valid_wire[r][c])
@@ -225,7 +245,6 @@ module sa #(
                 integer j;
                 always @(posedge clk or negedge rst_n) begin
                     if(!rst_n) begin for(j=0;j<DELAY;j=j+1) data[j]<='0; end
-                    else if(flush) begin for(j=0;j<DELAY;j=j+1) data[j]<='0; end
                     else begin
                         data[0]<=psum_wire[ROWS][c];
                         for(j=1;j<DELAY;j=j+1) data[j]<=data[j-1];

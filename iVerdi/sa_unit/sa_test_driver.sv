@@ -80,6 +80,9 @@ module sa_test_driver #(
     reg loading=1'b0,loading_bank=1'b0;
     reg [1:0] ready_model=2'b00;
     integer loading_count=0,ack_remaining=0;
+    // Logical abort clears the model immediately; unflushable datapath tokens
+    // retire naturally while these independent EDGE quarantine windows expire.
+    integer compute_drain_model=0,weight_drain_model=0;
     integer i,j,k,addr;
     longint signed total,partial;
     reg [COLS*ACC_WIDTH-1:0] new_data;
@@ -109,11 +112,17 @@ module sa_test_driver #(
             for(i=0;i<L;i=i+1) pipe_valid[i]=1'b0;
             for(i=0;i<ACC_ROWS;i=i+1) begin active[i]=1'b0;context_error[i]='0;end
             loading=1'b0;loading_count=0;ack_remaining=0;
+            compute_drain_model=(!rst_n ? 0 : L);
+            weight_drain_model=(!rst_n ? 0 : ROWS);
             if(!rst_n) begin
                 ready_model=2'b00;
                 for(i=0;i<COLS;i=i+1) biases[i]='0;
             end
         end else begin
+            if(compute_drain_model>0 && (in_ready!==1'b0 || bias_ready!==1'b0))
+                $fatal(1,"compute drain quarantine opened early cycle=%0d remaining=%0d",cycles,compute_drain_model);
+            if(weight_drain_model>0 && weight_ready!==1'b0)
+                $fatal(1,"weight drain quarantine opened early cycle=%0d remaining=%0d",cycles,weight_drain_model);
             busy_model='0;
             for(i=0;i<L;i=i+1) if(pipe_valid[i]) busy_model[pipe_bank[i]]=1'b1;
             if(bank_busy!==busy_model) $fatal(1,"bank_busy cycle=%0d got=%b expected=%b",cycles,bank_busy,busy_model);
@@ -212,6 +221,9 @@ module sa_test_driver #(
                 loading_count=loading_count+1;
                 if(loading_count==ROWS) ack_remaining=ROWS;
             end
+            // Compare pre-edge readiness above, then model this edge's countdown.
+            if(compute_drain_model>0) compute_drain_model=compute_drain_model-1;
+            if(weight_drain_model>0) weight_drain_model=weight_drain_model-1;
         end
     end
 
@@ -229,6 +241,9 @@ module sa_test_driver #(
         begin
             @(negedge clk);flush=1'b1;in_valid=1'b0;weight_valid=1'b0;bias_valid=1'b0;
             @(negedge clk);flush=1'b0;
+            // Existing regression callers may resume normal traffic on return.
+            // Directed drain tests drive flush manually to observe the window.
+            while(compute_drain_model>0 || weight_drain_model>0) @(negedge clk);
             @(negedge clk);
             if(bank_busy!=='0 || fifo_level!=='0 || reserved_level!=='0 || acc_busy!==1'b0 || fault!==1'b0)
                 $fatal(1,"flush did not clear compute/FIFO/context state");
