@@ -1,0 +1,103 @@
+{
+  "parameters": {
+    "COLS": 8,
+    "ACC_WIDTH": 48,
+    "RES_WIDTH": 8,
+    "MULT_WIDTH": 32,
+    "SHIFT_WIDTH": 7,
+    "TAG_WIDTH": 8
+  },
+  "count": 768,
+  "residual_count": 462,
+  "seed": 370714943526,
+  "input_width": 923,
+  "expected_width": 82,
+  "input_layout_lsb_first": [
+    {
+      "name": "acc",
+      "lsb": 0,
+      "width": 384
+    },
+    {
+      "name": "mask",
+      "lsb": 384,
+      "width": 8
+    },
+    {
+      "name": "tag",
+      "lsb": 392,
+      "width": 8
+    },
+    {
+      "name": "error",
+      "lsb": 400,
+      "width": 2
+    },
+    {
+      "name": "residual_en",
+      "lsb": 402,
+      "width": 1
+    },
+    {
+      "name": "relu_en",
+      "lsb": 403,
+      "width": 1
+    },
+    {
+      "name": "shift",
+      "lsb": 404,
+      "width": 7
+    },
+    {
+      "name": "mul_main",
+      "lsb": 411,
+      "width": 256
+    },
+    {
+      "name": "mul_res",
+      "lsb": 667,
+      "width": 256
+    }
+  ],
+  "expected_layout_lsb_first": [
+    {
+      "name": "data",
+      "lsb": 0,
+      "width": 64
+    },
+    {
+      "name": "mask",
+      "lsb": 64,
+      "width": 8
+    },
+    {
+      "name": "tag",
+      "lsb": 72,
+      "width": 8
+    },
+    {
+      "name": "error",
+      "lsb": 80,
+      "width": 2
+    }
+  ],
+  "generator_sha256": "106514150626cc74636145708e20c49d5edc669326e52e76398607d641637bf6",
+  "files": {
+    "vectors.json": {
+      "sha256": "b6a0500f9d63eb6c529fc7b0d7465a33a311bd86e949d1365397608b6010f390",
+      "bytes": 709251
+    },
+    "input.hex": {
+      "sha256": "59165e861d4484943a49fab2bfa3075565f620cc04e148f2c4b710d4b296833b",
+      "bytes": 178176
+    },
+    "residual.hex": {
+      "sha256": "a5cd1304cef18a826d039df9eaf07d04ba24a4aaf76d0747d78388e20ffbb469",
+      "bytes": 13056
+    },
+    "expected.hex": {
+      "sha256": "3adaf0c2b36ff0b31a6e650f55e74c9ff3cc766339761e0dbf5a465177c63503",
+      "bytes": 16896
+    }
+  }
+}
